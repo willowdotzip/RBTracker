@@ -12,7 +12,7 @@ enum AppView: String, CaseIterable, Identifiable {
 
   var title: String {
     switch self {
-    case .overview: "Overview"
+    case .overview: "Home"
     case .logbook: "Logbook"
     case .trends: "Trends"
     case .settings: "Settings"
@@ -98,60 +98,94 @@ struct Flavour: Identifiable, Hashable, Codable {
   }
 }
 
-let builtInFlavours: [Flavour] = [
-  Flavour(name: "Original", accent: "#00A7FF"),
-  Flavour(name: "Sugar Free", accent: "#E7EEF8", sugarFree: true),
-  Flavour(name: "Ruby", accent: "#C3093B"),
-  Flavour(name: "Iced Vanilla", accent: "#49adbe"),
-  Flavour(name: "Tropical", accent: "#FFC247"),
-  Flavour(name: "Watermelon", accent: "#FF355E"),
-  Flavour(name: "Blueberry", accent: "#496DFF"),
-  Flavour(name: "Coconut Berry", accent: "#D8F9FF"),
-  Flavour(name: "Peach", accent: "#FF9B63"),
-  Flavour(name: "Juneberry", accent: "#9C73FF"),
-  Flavour(name: "Dragon Fruit", accent: "#FF3DBD"),
-  Flavour(name: "Curuba Elderflower", accent: "#B7FF4A"),
-  Flavour(name: "Winter Edition", accent: "#7CE7FF"),
-  Flavour(name: "Summer Edition", accent: "#f0e53b"),
+struct RedBullEdition: Identifiable {
+  var id: String
+  var name: String
+  var accent: String
+  var secondary: String
+  var sugarFree: Bool = false
+}
+
+let redBullEditions: [RedBullEdition] = [
+  RedBullEdition(id: "original", name: "Original", accent: "#1D19AC", secondary: "#E21B4D"),
+  RedBullEdition(id: "sugarfree", name: "Sugar Free", accent: "#223971", secondary: "#C0C0C0", sugarFree: true),
+  RedBullEdition(id: "zero", name: "Zero", accent: "#1E2C5A", secondary: "#C0C0C0", sugarFree: true),
+  RedBullEdition(id: "summer-edition", name: "Summer Edition", accent: "#F4C300", secondary: "#E5A800"),
+  RedBullEdition(id: "cherry-edition", name: "Cherry Edition", accent: "#A61E2E", secondary: "#7A1420"),
+  RedBullEdition(id: "apple-edition", name: "Apple Edition", accent: "#8CC63F", secondary: "#5E8F24"),
+  RedBullEdition(id: "peach-edition", name: "Peach Edition", accent: "#F4B183", secondary: "#D98C5A"),
+  RedBullEdition(id: "ice-edition", name: "Ice Edition", accent: "#9FD9F6", secondary: "#5CB8E8"),
+  RedBullEdition(id: "blue-edition", name: "Blue Edition", accent: "#2F5DCC", secondary: "#1E3F99"),
+  RedBullEdition(id: "red-edition", name: "Red Edition", accent: "#D7263D", secondary: "#A61A2E"),
+  RedBullEdition(id: "tropical-edition", name: "Tropical Edition", accent: "#FFD300", secondary: "#E5B700"),
+  RedBullEdition(id: "coconut-edition", name: "Coconut Edition", accent: "#65C7D0", secondary: "#3AA9B8"),
+  RedBullEdition(id: "green-edition", name: "Green Edition", accent: "#4CAF50", secondary: "#2E7D32"),
+  RedBullEdition(id: "apricot-edition", name: "Apricot Edition", accent: "#F4801F", secondary: "#C96512"),
+  RedBullEdition(id: "ruby-edition", name: "Ruby Edition", accent: "#8B1E3F", secondary: "#61142C"),
+  RedBullEdition(id: "pink-edition", name: "Pink Edition", accent: "#FF6BAA", secondary: "#E04688"),
+]
+
+let builtInFlavours: [Flavour] = redBullEditions.map {
+  Flavour(name: $0.name, accent: $0.accent, sugarFree: $0.sugarFree)
+} + [
   Flavour(name: "Other", accent: "#AEB9C7"),
 ]
 
 let defaultFlavour = builtInFlavours[0]
 
-let fallbackAccents = [
-  "#00F2FF",
-  "#FF2C38",
-  "#FFC247",
-  "#B7FF4A",
-  "#FF73D1",
-  "#AEB9C7",
-  "#7CE7FF",
-  "#FF9B63",
+// every rebrand and typo we've ever seen. this list only grows
+let flavourNameAliases: [String: String] = [
+  "Iced Vanilla": "Ice Edition",
+  "Tropical": "Tropical Edition",
+  "Watermelon": "Red Edition",
+  "Blueberry": "Blue Edition",
+  "Juneberry": "Blue Edition",
+  "Coconut Berry": "Coconut Edition",
+  "Peach": "Peach Edition",
+  "Curuba Elderflower": "Green Edition",
+  "Dragon Fruit": "Pink Edition",
+  "Winter Edition": "Ice Edition",
+  "Ruby": "Ruby Edition",
 ]
 
-func flavourMeta(_ name: String) -> Flavour {
-  if let match = builtInFlavours.first(where: { $0.name == name }) {
-    return match
+let fallbackAccents = redBullEditions.map(\.accent) + ["#AEB9C7"]
+
+func knownFlavourName(_ name: String) -> String {
+  flavourNameAliases[name] ?? name
+}
+
+func flavourDetails(_ name: String) -> Flavour {
+  let canonical = knownFlavourName(name)
+  if let match = builtInFlavours.first(where: { $0.name == canonical }) {
+    if match.name == name {
+      return match
+    }
+    return Flavour(name: name, accent: match.accent, sugarFree: match.sugarFree)
   }
   return Flavour(
     name: name,
-    accent: accentForCustomFlavour(name),
+    accent: customFlavourAccent(name),
     sugarFree: name.range(of: #"sugar\s*free|zero"#, options: [.regularExpression, .caseInsensitive]) != nil
   )
 }
 
-func accentForCustomFlavour(_ name: String) -> String {
+func flavourAccent(for entry: RedBullEntry) -> String {
+  flavourDetails(entry.flavour).accent
+}
+
+func customFlavourAccent(_ name: String) -> String {
+  // hash the string and pray the colour isn't garbage. science
   let total = name.unicodeScalars.reduce(0) { $0 + Int($1.value) }
   return fallbackAccents[total % fallbackAccents.count]
 }
 
-func mergedFlavours(from entries: [RedBullEntry]) -> [Flavour] {
+func availableFlavours(from entries: [RedBullEntry]) -> [Flavour] {
   let builtInNames = Set(builtInFlavours.map(\.name))
   let custom = entries.map(\.flavour)
     .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !builtInNames.contains($0) }
     .stableUniqued()
     .sorted()
-    .map(flavourMeta)
+    .map(flavourDetails)
   return builtInFlavours + custom
 }
 
@@ -166,76 +200,64 @@ struct AppTheme: Identifiable {
   var text: Color
 }
 
-let appThemes: [AppTheme] = [
+let themeForIds: [AppTheme] = redBullEditions.map { edition in
   AppTheme(
-    id: "mist",
-    label: "Mist",
-    swatch: Color(hex: "#2563c7"),
-    primary: Color(hex: "#2563c7"),
-    secondary: Color(hex: "#00897b"),
-    background: Color(hex: "#eef3fb"),
+    id: edition.id,
+    label: edition.name,
+    swatch: Color(hex: edition.accent),
+    primary: Color(hex: edition.accent),
+    secondary: Color(hex: edition.secondary),
+    background: Color(hex: edition.accent),
     surface: .white,
     text: Color(hex: "#202124")
-  ),
-  AppTheme(
-    id: "aqua",
-    label: "Aqua",
-    swatch: Color(hex: "#007f73"),
-    primary: Color(hex: "#007f73"),
-    secondary: Color(hex: "#0b6f9f"),
-    background: Color(hex: "#eef8f7"),
-    surface: .white,
-    text: Color(hex: "#172422")
-  ),
-  AppTheme(
-    id: "signal-red",
-    label: "Signal red",
-    swatch: Color(hex: "#b3261e"),
-    primary: Color(hex: "#b3261e"),
-    secondary: Color(hex: "#7d5fff"),
-    background: Color(hex: "#fbf1ef"),
-    surface: .white,
-    text: Color(hex: "#251312")
-  ),
-  AppTheme(
-    id: "soft-pink",
-    label: "Soft pink",
-    swatch: Color(hex: "#a83f73"),
-    primary: Color(hex: "#a83f73"),
-    secondary: Color(hex: "#2563c7"),
-    background: Color(hex: "#fbf1f6"),
-    surface: .white,
-    text: Color(hex: "#24151c")
-  ),
-]
+  )
+}
 
-let defaultThemeId = "mist"
+let defaultThemeId = "original"
 
-func normaliseThemeId(_ id: String?) -> String {
+let coreThemeIds: Set<String> = ["original", "sugarfree", "zero"]
+
+var coreAppThemes: [AppTheme] {
+  themeForIds.filter { coreThemeIds.contains($0.id) }
+}
+
+var editionAppThemes: [AppTheme] {
+  themeForIds.filter { !coreThemeIds.contains($0.id) }
+}
+
+func knownThemeId(_ id: String?) -> String {
   guard let id, !id.isEmpty else { return defaultThemeId }
-  if appThemes.contains(where: { $0.id == id }) {
+  if themeForIds.contains(where: { $0.id == id }) {
     return id
   }
+  // graveyard of dead theme ids. delete any of these and someone will complain
   let legacy: [String: String] = [
-    "oura-mist": "mist",
-    "miku-blue": "aqua",
-    "teto-red": "signal-red",
-    "pastel-pink": "soft-pink",
-    "original": "aqua",
-    "zero": "mist",
-    "summer": "soft-pink",
-    "cherry": "signal-red",
-    "spring": "soft-pink",
-    "ruby": "signal-red",
-    "sugarfree": "mist",
-    "pink": "soft-pink",
-    "blue": "aqua",
+    "oura-mist": "blue-edition",
+    "miku-blue": "blue-edition",
+    "teto-red": "red-edition",
+    "pastel-pink": "pink-edition",
+    "signal-red": "red-edition",
+    "orange": "apricot-edition",
+    "yellow": "tropical-edition",
+    "aqua": "green-edition",
+    "mist": "blue-edition",
+    "indigo": "blue-edition",
+    "soft-pink": "pink-edition",
+    "summer": "summer-edition",
+    "cherry": "cherry-edition",
+    "spring": "pink-edition",
+    "ruby": "ruby-edition",
+    "sugarfree": "sugarfree",
+    "pink": "pink-edition",
+    "blue": "blue-edition",
   ]
   return legacy[id] ?? defaultThemeId
 }
 
-func appTheme(_ id: String) -> AppTheme {
-  appThemes.first(where: { $0.id == normaliseThemeId(id) }) ?? appThemes[0]
+func themeForId(_ id: String) -> AppTheme {
+  themeForIds.first(where: { $0.id == knownThemeId(id) })
+    ?? themeForIds.first(where: { $0.id == defaultThemeId })
+    ?? themeForIds[0]
 }
 
 enum DateFilter: String, CaseIterable, Identifiable {
@@ -269,6 +291,7 @@ struct EntryFilters: Equatable {
 struct UserLimits: Equatable {
   var dailyCanLimit: Double?
   var dailySpendLimit: Double?
+  var dailyLimitCanSizeMl: Int = 250
   var stopTime: String?
 
   var hasAnyLimit: Bool {
@@ -291,6 +314,43 @@ struct LimitCheckResult: Equatable {
   var todayCans: Double
   var todaySpend: Double
   var pastStopTime: Bool
+}
+
+enum LimitHeadroomKind: String, Equatable {
+  case cans
+  case spend
+
+  var label: String {
+    switch self {
+    case .cans: return "Cans"
+    case .spend: return "Spend"
+    }
+  }
+
+  var symbol: String {
+    switch self {
+    case .cans: return "cylinder.split.1x2"
+    case .spend: return "sterlingsign.circle"
+    }
+  }
+}
+
+struct LimitHeadroom: Equatable {
+  var kind: LimitHeadroomKind
+  var percentLeft: Int
+}
+
+struct LimitHeadroomSummary: Equatable {
+  var cans: LimitHeadroom?
+  var spend: LimitHeadroom?
+
+  var tightest: LimitHeadroom? {
+    [cans, spend].compactMap { $0 }.min(by: { $0.percentLeft < $1.percentLeft })
+  }
+
+  var hasConfiguredLimit: Bool {
+    cans != nil || spend != nil
+  }
 }
 
 struct Dashboard {
@@ -345,10 +405,30 @@ struct FlavourPoint: Identifiable {
   var accent: String
 }
 
+struct ForecastPoint: Identifiable {
+  var id: Int { day }
+  var day: Int
+  var current: Double
+  var lower: Double
+  var limit: Double?
+}
+
+struct SpendForecast {
+  var hasData: Bool
+  var activePeriodDays: Double
+  var avgDailySpend: Double
+  var avgDailyCans: Double
+  var projectedSpend: Double
+  var projectedCans: Double
+  var subtitle: String
+  var points: [ForecastPoint]
+}
+
 enum Metrics {
   static let caffeinePer250Ml = 80.0
   static let sugarPer250Ml = 27.0
 
+  // hardcoded uk prices from whenever i last cared. inflation is someone else's problem
   static let standardCanValues: [Int: (pricePerCan: Double, caffeineMg: Double)] = [
     250: (1.75, 80),
     355: (2.20, 114),
@@ -418,8 +498,8 @@ enum Metrics {
     return entry.cans * (Double(entry.sizeMl) / 250.0) * sugarPer250Ml
   }
 
-  static func buildEntry(userId: String, draft: EntryDraft, id: String = UUID().uuidString) -> RedBullEntry {
-    let meta = flavourMeta(draft.flavour)
+  static func makeEntry(userId: String, draft: EntryDraft, id: String = UUID().uuidString) -> RedBullEntry {
+    let meta = flavourDetails(draft.flavour)
     var entry = RedBullEntry(
       id: id,
       userId: userId,
@@ -438,11 +518,11 @@ enum Metrics {
       createdAt: nil,
       updatedAt: nil
     )
-    entry.importKey = makeImportKey(entry)
+    entry.importKey = importFingerprint(entry)
     return entry
   }
 
-  static func makeImportKey(_ entry: RedBullEntry) -> String {
+  static func importFingerprint(_ entry: RedBullEntry) -> String {
     [
       DateCodec.isoString(from: DateCodec.date(from: entry.dateTime) ?? Date()),
       entry.flavour.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
@@ -454,16 +534,17 @@ enum Metrics {
     ].joined(separator: "|")
   }
 
-  static func isDuplicate(existing: [RedBullEntry], draft: EntryDraft) -> Bool {
-    let entry = buildEntry(userId: "preview", draft: draft)
-    let key = makeImportKey(entry)
-    return existing.contains { $0.importKey == key || makeImportKey($0) == key }
+  static func alreadyImported(existing: [RedBullEntry], draft: EntryDraft) -> Bool {
+    let entry = makeEntry(userId: "preview", draft: draft)
+    let key = importFingerprint(entry)
+    return existing.contains { $0.importKey == key || importFingerprint($0) == key }
   }
 
   static func sorted(_ entries: [RedBullEntry]) -> [RedBullEntry] {
-    entries.sorted {
-      (DateCodec.date(from: $0.dateTime) ?? .distantPast) > (DateCodec.date(from: $1.dateTime) ?? .distantPast)
-    }
+    entries
+      .map { entry in (entry, DateCodec.date(from: entry.dateTime) ?? .distantPast) }
+      .sorted { $0.1 > $1.1 }
+      .map { $0.0 }
   }
 
   static func sum(_ entries: [RedBullEntry], _ selector: (RedBullEntry) -> Double) -> Double {
@@ -513,7 +594,6 @@ enum Metrics {
     }
   }
 
-  // monday-start week math. if this looks wrong, blame calendar.firstWeekday, not me.
   static func startOfWeek(_ date: Date) -> Date {
     var calendar = Calendar(identifier: .gregorian)
     calendar.firstWeekday = 2
@@ -583,6 +663,7 @@ enum Metrics {
       point.sugar += sugar(for: entry)
       grouped[key] = point
     }
+    // 30 days because more than that would make the chart actually useful and slow
     return grouped.values.sorted { $0.key < $1.key }.suffix(30).map { $0 }
   }
 
@@ -608,7 +689,12 @@ enum Metrics {
   static func groupByFlavour(_ entries: [RedBullEntry]) -> [FlavourPoint] {
     var grouped: [String: FlavourPoint] = [:]
     entries.forEach { entry in
-      var point = grouped[entry.flavour] ?? FlavourPoint(name: entry.flavour, value: 0, spend: 0, accent: entry.flavourAccent)
+      var point = grouped[entry.flavour] ?? FlavourPoint(
+        name: entry.flavour,
+        value: 0,
+        spend: 0,
+        accent: flavourDetails(entry.flavour).accent
+      )
       point.value += entry.cans
       point.spend += spend(for: entry)
       grouped[entry.flavour] = point
@@ -635,7 +721,7 @@ enum Metrics {
       .first
   }
 
-  static func buildDashboard(entries: [RedBullEntry]) -> Dashboard {
+  static func dashboard(entries: [RedBullEntry]) -> Dashboard {
     let now = Date()
     let todayStart = Calendar.current.startOfDay(for: now)
     let tomorrow = Calendar.current.date(byAdding: DateComponents(day: 1, second: -1), to: todayStart) ?? now
@@ -668,7 +754,7 @@ enum Metrics {
     )
   }
 
-  static func buildInsights(entries: [RedBullEntry]) -> [Insight] {
+  static func insights(entries: [RedBullEntry]) -> [Insight] {
     let now = Date()
     let weekStart = startOfWeek(now)
     let previousWeekStart = Calendar.current.date(byAdding: .day, value: -7, to: weekStart) ?? weekStart
@@ -688,12 +774,12 @@ enum Metrics {
       Insight(
         label: "Month spend",
         value: "You spent \(money(thisMonthSpend)) this month",
-        detail: lastMonthSpend > 0 ? comparisonCopy(current: thisMonthSpend, previous: lastMonthSpend, suffix: "vs last month") : "No previous-month baseline yet."
+        detail: lastMonthSpend > 0 ? comparisonText(current: thisMonthSpend, previous: lastMonthSpend, suffix: "vs last month") : "No previous-month baseline yet."
       ),
       Insight(
         label: "Weekly pace",
         value: "\(one(thisWeekCans)) cans this week",
-        detail: lastWeekCans > 0 ? comparisonCopy(current: thisWeekCans, previous: lastWeekCans, suffix: "vs last week") : "The weekly comparator wakes up after another week of data."
+        detail: lastWeekCans > 0 ? comparisonText(current: thisWeekCans, previous: lastWeekCans, suffix: "vs last week") : "The weekly comparator wakes up after another week of data."
       ),
       Insight(
         label: "Zero sugar mix",
@@ -703,7 +789,59 @@ enum Metrics {
     ]
   }
 
-  static func comparisonCopy(current: Double, previous: Double, suffix: String) -> String {
+  static func spendForecast(
+    entries: [RedBullEntry],
+    limits: UserLimits,
+    projectionDays: Int,
+    now: Date = Date()
+  ) -> SpendForecast {
+    let activePeriodDays: Double = {
+      guard let first = entries.compactMap({ DateCodec.date(from: $0.dateTime) }).min() else {
+        return 1
+      }
+      return max(1, ceil(now.timeIntervalSince(first) / 86_400))
+    }()
+    let periodStart = now.addingTimeInterval(-activePeriodDays * 86_400)
+    let recent = entriesInRange(entries, start: periodStart, end: now)
+
+    guard !recent.isEmpty else {
+      return SpendForecast(
+        hasData: false,
+        activePeriodDays: activePeriodDays,
+        avgDailySpend: 0,
+        avgDailyCans: 0,
+        projectedSpend: 0,
+        projectedCans: 0,
+        subtitle: "Based on past spending",
+        points: []
+      )
+    }
+
+    let avgDailySpend = sum(recent, spend) / activePeriodDays
+    let avgDailyCans = sum(recent, \.cans) / activePeriodDays
+    let clampedProjectionDays = max(1, projectionDays)
+    let points = (1...clampedProjectionDays).map { day in
+      ForecastPoint(
+        day: day,
+        current: Double(day) * avgDailySpend,
+        lower: Double(day) * avgDailySpend * 0.8,
+        limit: limits.dailySpendLimit.map { Double(day) * $0 }
+      )
+    }
+
+    return SpendForecast(
+      hasData: true,
+      activePeriodDays: activePeriodDays,
+      avgDailySpend: avgDailySpend,
+      avgDailyCans: avgDailyCans,
+      projectedSpend: avgDailySpend * Double(clampedProjectionDays),
+      projectedCans: avgDailyCans * Double(clampedProjectionDays),
+      subtitle: "\(Int(activePeriodDays)) day average: \(money(avgDailySpend)) per day",
+      points: points
+    )
+  }
+
+  static func comparisonText(current: Double, previous: Double, suffix: String) -> String {
     let difference = current - previous
     let percent = previous == 0 ? 0 : (difference / previous) * 100
     let direction = difference >= 0 ? "up" : "down"
@@ -736,15 +874,45 @@ enum AveragePriceKey {
 enum Limits {
   static let canKey = "dailyCanLimit"
   static let spendKey = "dailySpendLimit"
+  static let canSizeKey = "dailyLimitCanSizeMl"
   static let stopKey = "stopTime"
+  static let standardLimitCanSizes = [250, 355, 473]
+
+  static func wholeCanLimit(_ value: Double?) -> Double? {
+    guard let value, value > 0 else { return nil }
+    return Double(max(1, Int(value.rounded(.toNearestOrAwayFromZero))))
+  }
+
+  static func normalisedCanSize(_ value: Int?) -> Int {
+    guard let value, standardLimitCanSizes.contains(value) else { return 250 }
+    return value
+  }
+
+  static func recommendedSpendLimit(forCanLimit value: Double?, sizeMl: Int = 250) -> Double? {
+    guard let cans = wholeCanLimit(value) else { return nil }
+    return ceil(cans * Metrics.defaultPrice(for: normalisedCanSize(sizeMl)))
+  }
+
+  static func normalised(_ limits: UserLimits) -> UserLimits {
+    var next = limits
+    next.dailyCanLimit = wholeCanLimit(limits.dailyCanLimit)
+    next.dailyLimitCanSizeMl = normalisedCanSize(limits.dailyLimitCanSizeMl)
+    next.dailySpendLimit = recommendedSpendLimit(
+      forCanLimit: next.dailyCanLimit,
+      sizeMl: next.dailyLimitCanSizeMl
+    )
+    return next
+  }
 
   static func parse(_ prefs: [String: Any]) -> UserLimits {
     var limits = UserLimits()
-    if let can = doubleValue(prefs[canKey]), can > 0 {
+    limits.dailyLimitCanSizeMl = normalisedCanSize(doubleValue(prefs[canSizeKey]).map { Int($0) })
+    if let can = wholeCanLimit(doubleValue(prefs[canKey])) {
       limits.dailyCanLimit = can
-    }
-    if let spend = doubleValue(prefs[spendKey]), spend >= 0 {
-      limits.dailySpendLimit = spend
+      limits.dailySpendLimit = recommendedSpendLimit(
+        forCanLimit: can,
+        sizeMl: limits.dailyLimitCanSizeMl
+      )
     }
     if let stop = prefs[stopKey] as? String, stop.range(of: #"^\d{2}:\d{2}$"#, options: .regularExpression) != nil {
       limits.stopTime = stop
@@ -753,9 +921,11 @@ enum Limits {
   }
 
   static func serialize(_ limits: UserLimits) -> [String: Any] {
+    let limits = normalised(limits)
     var data: [String: Any] = [:]
     if let value = limits.dailyCanLimit, value > 0 {
       data[canKey] = value
+      data[canSizeKey] = limits.dailyLimitCanSizeMl
     }
     if let value = limits.dailySpendLimit, value >= 0 {
       data[spendKey] = value
@@ -770,6 +940,7 @@ enum Limits {
     var next = existing
     next.removeValue(forKey: canKey)
     next.removeValue(forKey: spendKey)
+    next.removeValue(forKey: canSizeKey)
     next.removeValue(forKey: stopKey)
     serialize(limits).forEach { next[$0.key] = $0.value }
     return next
@@ -815,8 +986,8 @@ enum Limits {
     )
   }
 
-  // daily limits use london time because of course they do. timezones are a pain.
   static func entriesTodayBst(_ entries: [RedBullEntry], ref: Date = Date()) -> [RedBullEntry] {
+    // timezones were a fucking mistake
     let key = bstDateKey(ref)
     return entries.filter { entry in
       guard let date = DateCodec.date(from: entry.dateTime) else { return false }
@@ -857,6 +1028,24 @@ enum Limits {
   static func progress(current: Double, limit: Double?) -> Double {
     guard let limit, limit > 0 else { return 0 }
     return min(1, current / limit)
+  }
+
+  static func percentLeft(current: Double, limit: Double) -> Int {
+    Int((max(0, 1 - current / max(limit, 0.01)) * 100).rounded())
+  }
+
+  static func headroom(limits: UserLimits, check: LimitCheckResult) -> LimitHeadroomSummary {
+    var cans: LimitHeadroom?
+    var spend: LimitHeadroom?
+
+    if let limit = limits.dailyCanLimit {
+      cans = LimitHeadroom(kind: .cans, percentLeft: percentLeft(current: check.todayCans, limit: limit))
+    }
+    if let limit = limits.dailySpendLimit {
+      spend = LimitHeadroom(kind: .spend, percentLeft: percentLeft(current: check.todaySpend, limit: limit))
+    }
+
+    return LimitHeadroomSummary(cans: cans, spend: spend)
   }
 
   static func statusMessage(violations: [LimitViolation], check: LimitCheckResult, limits: UserLimits) -> String {
@@ -971,7 +1160,7 @@ enum BarcodeLookup {
   }
 
   static func resolve(_ product: BarcodeProductDraft, source: ResolvedBarcodeProduct.Source) -> ResolvedBarcodeProduct {
-    let meta = flavourMeta(product.flavourName)
+    let meta = flavourDetails(product.flavourName)
     return ResolvedBarcodeProduct(
       flavourName: product.flavourName,
       sizeMl: product.sizeMl,
@@ -1049,8 +1238,8 @@ struct JSONExportDocument: FileDocument {
 }
 
 enum ImportParser {
-  // accepts our export wrapper or a bare array — json import is forgiving on purpose.
   static func parseJSON(_ data: Data) throws -> [EntryDraft] {
+    // try format A, try format B, shrug. json standards are optional anyway
     let decoder = JSONDecoder()
     if let payload = try? decoder.decode(RedBullExportPayload.self, from: data) {
       return payload.entries.map(coerce)
@@ -1067,10 +1256,10 @@ enum ImportParser {
 
   private static func coerce(_ entry: RedBullEntry) -> EntryDraft {
     var draft = EntryDraft()
-    let meta = flavourMeta(entry.flavour)
+    let meta = flavourDetails(entry.flavour)
     draft.cans = entry.cans
     draft.flavour = entry.flavour
-    draft.flavourAccent = entry.flavourAccent.isEmpty ? meta.accent : entry.flavourAccent
+    draft.flavourAccent = entry.flavourAccent.isEmpty ? meta.accent : draft.flavourAccent
     draft.sizeMl = entry.sizeMl
     draft.pricePerCan = entry.pricePerCan
     draft.date = DateCodec.date(from: entry.dateTime) ?? Date()
@@ -1098,7 +1287,6 @@ enum DateCodec {
     return formatter
   }()
 
-  // appwrite dates might have fractional seconds or not. try both and hope.
   static func date(from value: String) -> Date? {
     isoWithFractional.date(from: value) ?? isoWithoutFractional.date(from: value)
   }

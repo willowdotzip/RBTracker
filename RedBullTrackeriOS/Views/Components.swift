@@ -5,26 +5,21 @@ extension View {
     liquidGlass(radius: radius)
   }
 
-  // ios 26 gets the fancy glass; everyone else gets regular material and cope.
-  @ViewBuilder
   func liquidGlass(radius: CGFloat = 24, tint: Color? = nil) -> some View {
+    // this does absolutely fucking nothing
+    self
+  }
+
+  func flatSurface(radius: CGFloat = 20, tint: Color? = nil) -> some View {
     let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-    if #available(iOS 26.0, *) {
-      if let tint {
-        self
-          .glassEffect(.regular.tint(tint.opacity(0.18)), in: shape)
-          .overlay(shape.stroke(.white.opacity(0.28), lineWidth: 0.8))
-      } else {
-        self
-          .glassEffect(.regular, in: shape)
-          .overlay(shape.stroke(.white.opacity(0.28), lineWidth: 0.8))
+    return self
+      .background {
+        shape.fill(Color(.secondarySystemGroupedBackground).opacity(0.82))
+        if let tint {
+          shape.fill(tint.opacity(0.055))
+        }
       }
-    } else {
-      self
-        .background(.regularMaterial, in: shape)
-        .overlay(shape.stroke(.white.opacity(0.38), lineWidth: 0.8))
-        .shadow(color: .black.opacity(0.08), radius: 22, x: 0, y: 12)
-    }
+      .overlay(shape.stroke((tint ?? .primary).opacity(0.10), lineWidth: 1))
   }
 
   @ViewBuilder
@@ -37,20 +32,46 @@ extension View {
 
   @ViewBuilder
   func glassButton() -> some View {
-    if #available(iOS 26.0, *) {
-      self.buttonStyle(.glass)
-    } else {
-      self.buttonStyle(.bordered)
-    }
+    self.buttonStyle(GentleHapticButtonStyle())
   }
 
   @ViewBuilder
   func glassProminentButton() -> some View {
-    if #available(iOS 26.0, *) {
-      self.buttonStyle(.glassProminent)
-    } else {
-      self.buttonStyle(.borderedProminent)
-    }
+    self.buttonStyle(GentleHapticButtonStyle(prominent: true))
+  }
+}
+
+struct GentleHapticButtonStyle: ButtonStyle {
+  var prominent = false
+  @Environment(\.isEnabled) private var isEnabled
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .foregroundStyle(prominent ? Color.white : Color.accentColor)
+      .padding(.horizontal, 14)
+      .padding(.vertical, 10)
+      .background(
+        prominent ? Color.accentColor : Color(.tertiarySystemFill),
+        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+      )
+      .opacity(isEnabled ? (configuration.isPressed ? 0.76 : 1) : 0.42)
+      .scaleEffect(configuration.isPressed ? 0.985 : 1)
+      .sensoryFeedback(.impact(weight: .light, intensity: 0.22), trigger: configuration.isPressed) { _, isPressed in
+        isPressed
+      }
+  }
+}
+
+struct GentleHapticPlainButtonStyle: ButtonStyle {
+  @Environment(\.isEnabled) private var isEnabled
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .opacity(isEnabled ? (configuration.isPressed ? 0.68 : 1) : 0.42)
+      .scaleEffect(configuration.isPressed ? 0.99 : 1)
+      .sensoryFeedback(.impact(weight: .light, intensity: 0.22), trigger: configuration.isPressed) { _, isPressed in
+        isPressed
+      }
   }
 }
 
@@ -58,17 +79,94 @@ struct AppBackground: View {
   var theme: AppTheme
 
   var body: some View {
-    LinearGradient(
-      colors: [
-        Color(.systemBackground),
-        theme.background,
-        theme.primary.opacity(0.10),
-        theme.secondary.opacity(0.08),
-      ],
-      startPoint: .topLeading,
-      endPoint: .bottomTrailing
-    )
+    ZStack {
+      Color(.systemGroupedBackground)
+      RadialGradient(
+        colors: [
+          theme.background.opacity(0.12),
+          Color.clear,
+        ],
+        center: .top,
+        startRadius: 0,
+        endRadius: 420
+      )
+    }
     .ignoresSafeArea()
+  }
+}
+
+struct ThemePickerRow: View {
+  var theme: AppTheme
+  var isSelected: Bool
+
+  var body: some View {
+    HStack(spacing: 14) {
+      Circle()
+        .fill(theme.swatch)
+        .frame(width: 32, height: 32)
+        .overlay {
+          Circle()
+            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+        }
+
+      Text(theme.label)
+        .font(.body.weight(.medium))
+        .foregroundStyle(.primary)
+        .lineLimit(1)
+        .minimumScaleFactor(0.85)
+
+      Spacer(minLength: 8)
+
+      if isSelected {
+        Image(systemName: "checkmark.circle.fill")
+          .font(.title3)
+          .foregroundStyle(theme.primary)
+      }
+    }
+    .padding(.vertical, 4)
+    .contentShape(Rectangle())
+  }
+}
+
+struct ThemePickerList: View {
+  var selectedThemeId: String
+  var onSelect: (String) -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 18) {
+      themeRows(title: "Core", themes: coreAppThemes)
+      themeRows(title: "Editions", themes: editionAppThemes)
+    }
+  }
+
+  @ViewBuilder
+  private func themeRows(title: String, themes: [AppTheme]) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text(title)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .textCase(.uppercase)
+        .padding(.leading, 2)
+
+      VStack(spacing: 6) {
+        ForEach(themes) { theme in
+          Button {
+            onSelect(theme.id)
+          } label: {
+            ThemePickerRow(theme: theme, isSelected: knownThemeId(selectedThemeId) == theme.id)
+              .padding(.horizontal, 14)
+              .padding(.vertical, 10)
+              .background(
+                knownThemeId(selectedThemeId) == theme.id
+                  ? theme.primary.opacity(0.10)
+                  : Color(.secondarySystemGroupedBackground),
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+              )
+          }
+          .buttonStyle(GentleHapticPlainButtonStyle())
+        }
+      }
+    }
   }
 }
 
@@ -88,14 +186,14 @@ struct GlassSection<Content: View>: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
+    VStack(alignment: .leading, spacing: 14) {
       HStack(alignment: .top, spacing: 12) {
         if let symbol {
           Image(systemName: symbol)
             .font(.headline.weight(.semibold))
             .foregroundStyle(tint ?? .primary)
-            .frame(width: 32, height: 32)
-            .background((tint ?? .primary).opacity(0.11), in: Circle())
+            .frame(width: 30, height: 30)
+            .background((tint ?? .primary).opacity(0.10), in: Circle())
         }
         VStack(alignment: .leading, spacing: 3) {
           Text(title)
@@ -111,9 +209,9 @@ struct GlassSection<Content: View>: View {
 
       content
     }
-    .padding(18)
+    .padding(16)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .liquidGlass(radius: 26, tint: tint)
+    .liquidGlass(radius: 22, tint: tint)
   }
 }
 
@@ -140,7 +238,7 @@ struct MetricTile: View {
         .font(.headline.weight(.semibold))
         .foregroundStyle(color)
         .frame(width: 34, height: 34)
-        .background(color.opacity(0.12), in: Circle())
+        .background(color.opacity(0.10), in: Circle())
 
       VStack(alignment: .leading, spacing: 4) {
         Text(value)
@@ -157,8 +255,8 @@ struct MetricTile: View {
       }
     }
     .padding(16)
-    .frame(width: 154, height: 148, alignment: .topLeading)
-    .liquidGlass(radius: 22, tint: color)
+    .frame(width: 150, height: 136, alignment: .topLeading)
+    .liquidGlass(radius: 18, tint: color)
   }
 }
 
@@ -278,7 +376,7 @@ struct EntryRowView: View {
   var body: some View {
     HStack(spacing: 14) {
       RoundedRectangle(cornerRadius: 4, style: .continuous)
-        .fill(Color(hex: entry.flavourAccent))
+        .fill(Color(hex: flavourAccent(for: entry)))
         .frame(width: 5)
 
       VStack(alignment: .leading, spacing: 6) {
@@ -326,30 +424,15 @@ struct EntryRowView: View {
       .glassButton()
     }
     .padding(14)
-    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    .background(Color(.secondarySystemGroupedBackground).opacity(0.62), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
   }
 }
 
 struct LegalFootnote: View {
   var body: some View {
-    Text("Synced with Appwrite. Your intake history stays tied to your account.")
+    Text("Your intake history stays synced to your account.")
       .font(.caption)
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
-  }
-}
-
-struct ConfigValueRow: View {
-  var label: String
-  var value: String
-
-  var body: some View {
-    LabeledContent(label) {
-      Text(value.isEmpty ? "not set" : value)
-        .font(.caption.monospaced())
-        .lineLimit(1)
-        .truncationMode(.middle)
-        .foregroundStyle(.secondary)
-    }
   }
 }

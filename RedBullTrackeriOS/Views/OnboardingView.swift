@@ -5,11 +5,12 @@ struct OnboardingView: View {
   @Environment(\.dismiss) private var dismiss
   @State private var step = 1
   @State private var dailyCanLimit: Double? = 2
-  @State private var dailySpendLimit: Double? = 3.5
+  @State private var dailyLimitCanSizeMl = 250
   @State private var stopTime = Calendar.current.date(bySettingHour: 18, minute: 0, second: 0, of: Date()) ?? Date()
   @State private var stopEnabled = true
   @State private var selectedThemeId: String = defaultThemeId
 
+  // six steps to tell an app how many redbulls you'll regret today
   private let stepCount = 6
 
   var body: some View {
@@ -25,7 +26,7 @@ struct OnboardingView: View {
               .foregroundStyle(.secondary)
           }
           ProgressView(value: Double(step), total: Double(stepCount))
-            .tint(appTheme(selectedThemeId).primary)
+            .tint(themeForId(selectedThemeId).primary)
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)
@@ -55,7 +56,6 @@ struct OnboardingView: View {
             }
             .glassProminentButton()
           } else {
-            // limits and theme land in appwrite prefs, not some mystery local plist.
             Button("Save setup", systemImage: "checkmark") {
               Task {
                 await store.saveOnboarding(limits: limits, onboardingThemeId: selectedThemeId)
@@ -69,7 +69,7 @@ struct OnboardingView: View {
         .padding(.horizontal, 20)
         .padding(.bottom, 18)
       }
-      .liquidBackground(appTheme(selectedThemeId))
+      .liquidBackground(themeForId(selectedThemeId))
       .navigationTitle("Welcome")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
@@ -87,10 +87,10 @@ struct OnboardingView: View {
 
   private var welcomeStep: some View {
     OnboardingPanel {
-      Text("Hey \(firstName(store.user)). Set your baseline.")
-        .font(.system(size: 38, weight: .bold, design: .rounded))
+      Text("Hey \(displayFirstName(store.user)). Set your baseline.")
+        .font(.system(size: 38, weight: .bold))
         .minimumScaleFactor(0.65)
-      Text("Pick a theme, then set optional limits for cans, spend, and time. You can change all of this later.")
+      Text("Choose a colour and a simple daily plan. Your spending limit will stay matched to your can limit.")
         .font(.body)
         .foregroundStyle(.secondary)
     }
@@ -98,27 +98,11 @@ struct OnboardingView: View {
 
   private var themeStep: some View {
     OnboardingPanel {
-      Text("Choose the app color.")
+      Text("Choose your edition theme.")
         .font(.largeTitle.weight(.bold))
-      LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-        ForEach(appThemes) { theme in
-          Button {
-            selectedThemeId = theme.id
-            store.setThemeId(theme.id, sync: false)
-          } label: {
-            HStack {
-              Circle().fill(theme.swatch).frame(width: 24, height: 24)
-              Text(theme.label)
-              Spacer()
-              if selectedThemeId == theme.id {
-                Image(systemName: "checkmark")
-              }
-            }
-            .padding()
-            .background(selectedThemeId == theme.id ? theme.primary.opacity(0.12) : Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-          }
-          .buttonStyle(.plain)
-        }
+      ThemePickerList(selectedThemeId: selectedThemeId) { themeId in
+        selectedThemeId = themeId
+        store.setThemeId(themeId, sync: false)
       }
     }
   }
@@ -130,9 +114,24 @@ struct OnboardingView: View {
       Stepper(value: Binding(
         get: { dailyCanLimit ?? 0 },
         set: { dailyCanLimit = $0 <= 0 ? nil : $0 }
-      ), in: 0...10, step: 0.5) {
+      ), in: 0...10, step: 1) {
         Text(dailyCanLimit.map { "\(Metrics.one($0)) cans per day" } ?? "No daily cap")
           .font(.title2.weight(.semibold))
+      }
+      Text("Can limits use whole cans, so the daily target is always clear.")
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+      VStack(alignment: .leading, spacing: 8) {
+        Text("What size cans do you usually drink?")
+          .font(.subheadline)
+          .foregroundStyle(.secondary)
+        Picker("Can size", selection: $dailyLimitCanSizeMl) {
+          ForEach(Limits.standardLimitCanSizes, id: \.self) { size in
+            Text("\(size)ml").tag(size)
+          }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
       }
       Button(dailyCanLimit == nil ? "Use 2 cans" : "No daily cap") {
         dailyCanLimit = dailyCanLimit == nil ? 2 : nil
@@ -143,19 +142,24 @@ struct OnboardingView: View {
 
   private var spendStep: some View {
     OnboardingPanel {
-      Text("Set a daily spend cap.")
+      Text("Your daily plan.")
         .font(.largeTitle.weight(.bold))
-      Stepper(value: Binding(
-        get: { dailySpendLimit ?? 0 },
-        set: { dailySpendLimit = $0 <= 0 ? nil : $0 }
-      ), in: 0...30, step: 0.5) {
-        Text(dailySpendLimit.map { "\(Metrics.money($0)) per day" } ?? "No spend cap")
+      if let dailyCanLimit, let linkedSpendLimit {
+        Text("You've chosen \(Metrics.one(dailyCanLimit)) Red Bulls a day with a \(Metrics.money(linkedSpendLimit)) limit.")
+          .font(.title2.weight(.semibold))
+        VStack(alignment: .leading, spacing: 12) {
+          coverageRow(size: 250)
+          coverageRow(size: 355)
+          coverageRow(size: 473)
+        }
+        .padding(.vertical, 8)
+        Text("The spending limit is rounded up from the typical price of \(Metrics.one(dailyCanLimit)) x \(dailyLimitCanSizeMl)ml cans.")
+          .font(.subheadline)
+          .foregroundStyle(.secondary)
+      } else {
+        Text("You have not set a daily can or spending limit.")
           .font(.title2.weight(.semibold))
       }
-      Button(dailySpendLimit == nil ? "Use \(Metrics.money(3.5))" : "No spend cap") {
-        dailySpendLimit = dailySpendLimit == nil ? 3.5 : nil
-      }
-      .glassButton()
     }
   }
 
@@ -167,7 +171,7 @@ struct OnboardingView: View {
       if stopEnabled {
         DatePicker("Stop by", selection: $stopTime, displayedComponents: .hourAndMinute)
       }
-      Text("The web app checks this using Europe/London time. This native app keeps the same rule.")
+      Text("Warnings use Europe/London time.")
         .font(.subheadline)
         .foregroundStyle(.secondary)
     }
@@ -176,12 +180,12 @@ struct OnboardingView: View {
   private var finishStep: some View {
     OnboardingPanel {
       Text("Ready.")
-        .font(.system(size: 52, weight: .bold, design: .rounded))
+        .font(.system(size: 52, weight: .bold))
       VStack(alignment: .leading, spacing: 8) {
         Label(dailyCanLimit.map { "\(Metrics.one($0)) cans/day" } ?? "No can cap", systemImage: "bolt.fill")
-        Label(dailySpendLimit.map { "\(Metrics.money($0))/day" } ?? "No spend cap", systemImage: "sterlingsign.circle.fill")
+        Label(linkedSpendLimit.map { "\(Metrics.money($0))/day" } ?? "No spend cap", systemImage: "sterlingsign.circle.fill")
         Label(stopEnabled ? "Stop by \(DateFormatters.clock.string(from: stopTime))" : "No stop time", systemImage: "clock.fill")
-        Label("\(appTheme(selectedThemeId).label) theme", systemImage: "paintpalette.fill")
+        Label("\(themeForId(selectedThemeId).label) theme", systemImage: "paintpalette.fill")
       }
       .font(.headline)
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -191,11 +195,24 @@ struct OnboardingView: View {
   private var limits: UserLimits {
     var limits = UserLimits()
     limits.dailyCanLimit = dailyCanLimit
-    limits.dailySpendLimit = dailySpendLimit
+    limits.dailyLimitCanSizeMl = dailyLimitCanSizeMl
+    limits.dailySpendLimit = linkedSpendLimit
     if stopEnabled {
       limits.stopTime = DateFormatters.bstTime.string(from: stopTime)
     }
     return limits
+  }
+
+  private var linkedSpendLimit: Double? {
+    Limits.recommendedSpendLimit(forCanLimit: dailyCanLimit, sizeMl: dailyLimitCanSizeMl)
+  }
+
+  private func coverageRow(size: Int) -> some View {
+    let price = Metrics.defaultPrice(for: size)
+    let count = price > 0 ? Int((linkedSpendLimit ?? 0) / price) : 0
+    return Label("\(Metrics.money(linkedSpendLimit ?? 0)) can get you \(count) x \(size)ml cans", systemImage: "checkmark.circle")
+      .font(.headline)
+      .foregroundStyle(themeForId(selectedThemeId).primary)
   }
 }
 
@@ -203,15 +220,14 @@ struct OnboardingPanel<Content: View>: View {
   @ViewBuilder var content: Content
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 22) {
-      Spacer()
-      content
-      Spacer()
+    ScrollView {
+      VStack(alignment: .leading, spacing: 22) {
+        content
+      }
+      .padding(.horizontal, 24)
+      .padding(.vertical, 18)
+      .frame(maxWidth: 560, alignment: .topLeading)
     }
-    .padding(24)
-    .frame(maxWidth: 560, maxHeight: .infinity, alignment: .leading)
-    .liquidGlass(radius: 34)
-    .padding(.horizontal, 20)
-    .padding(.vertical, 8)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
   }
 }

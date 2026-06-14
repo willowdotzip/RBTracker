@@ -13,10 +13,13 @@ struct RedBullTrackeriOSApp: App {
         .task {
           await store.bootstrap()
         }
-        // coming back to the app? quietly re-fetch entries. still not realtime, just polite.
         .onChange(of: scenePhase) { _, newPhase in
+          // app came back from the dead. resync everything because we don't trust anything
           if newPhase == .active, store.user != nil {
-            Task { await store.refreshEntries(showLoader: false) }
+            Task {
+              await store.refreshEntries(showLoader: false)
+              await store.startRealtimeSync()
+            }
           }
         }
     }
@@ -32,12 +35,14 @@ struct RootView: View {
       if store.authLoading {
         LoadingView()
       } else if store.user == nil {
+        // no user no problem. well actually yes problem but at least it's pretty
         AuthView()
       } else {
         MainView()
       }
     }
     .preferredColorScheme(.light)
+    .buttonStyle(GentleHapticPlainButtonStyle())
   }
 }
 
@@ -54,7 +59,7 @@ struct LoadingView: View {
 
       VStack(spacing: 8) {
         Text("Red Bull Tracker")
-          .font(.system(size: 34, weight: .bold, design: .rounded))
+          .font(.system(size: 34, weight: .bold))
         Text(store.setupStatus.message)
           .font(.callout)
           .foregroundStyle(.secondary)

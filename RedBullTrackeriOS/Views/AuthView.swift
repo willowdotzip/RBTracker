@@ -48,7 +48,6 @@ struct AuthView: View {
             }
           }
 
-          // ping can fail before you even log in — worth showing instead of a silent void.
           if !store.authError.isEmpty {
             Label(store.authError, systemImage: "exclamationmark.circle.fill")
               .statusStyle(color: .red)
@@ -80,6 +79,7 @@ struct AuthView: View {
           }
           .controlSize(.large)
           .glassProminentButton()
+          // 8 chars minimum. security theater but at least it's something
           .disabled(store.busyAction == "auth" || email.isEmpty || password.count < 8)
         }
         .padding(18)
@@ -114,7 +114,7 @@ private struct AuthHeader: View {
 
       VStack(spacing: 7) {
         Text("Red Bull Tracker")
-          .font(.system(size: 38, weight: .bold, design: .rounded))
+          .font(.system(size: 38, weight: .bold))
           .multilineTextAlignment(.center)
           .minimumScaleFactor(0.75)
         Text("Track today. Sync everywhere.")

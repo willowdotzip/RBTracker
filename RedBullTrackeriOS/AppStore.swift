@@ -1,3 +1,4 @@
+import Appwrite
 import Foundation
 import SwiftUI
 
@@ -17,80 +18,129 @@ struct QuickAdd: Identifiable {
 let quickAdds: [QuickAdd] = [
   QuickAdd(label: "Original", flavour: "Original", sizeMl: 250, pricePerCan: 1.75),
   QuickAdd(label: "Sugar Free", flavour: "Sugar Free", sizeMl: 250, pricePerCan: 1.75),
-  QuickAdd(label: "Iced Vanilla", flavour: "Iced Vanilla", sizeMl: 250, pricePerCan: 1.75),
+  QuickAdd(label: "Ice Edition", flavour: "Ice Edition", sizeMl: 250, pricePerCan: 1.75),
   QuickAdd(label: "473ml Original", flavour: "Original", sizeMl: 473, pricePerCan: 2.85),
 ]
 
+struct AppAnalytics {
+  var allFlavours: [Flavour]
+  var entriesInView: [RedBullEntry]
+  var dashboard: Dashboard
+  var insights: [Insight]
+  var limitCheck: LimitCheckResult
+  var chartData: [DayPoint]
+  var weekData: [WeekPoint]
+  var flavourData: [FlavourPoint]
+  var favouriteFlavourOverall: String
+  var recentEntries: [RedBullEntry]
+
+  static let empty = AppAnalytics(entries: [], filters: EntryFilters(), limits: UserLimits())
+
+  init(entries: [RedBullEntry], filters: EntryFilters, limits: UserLimits) {
+    let filteredEntries = Metrics.sorted(Metrics.applyFilters(entries, filters: filters))
+    allFlavours = availableFlavours(from: entries)
+    entriesInView = filteredEntries
+    dashboard = Metrics.dashboard(entries: entries)
+    insights = Metrics.insights(entries: entries)
+    limitCheck = Limits.evaluate(limits: limits, entries: entries)
+    chartData = Metrics.groupByDay(filteredEntries)
+    weekData = Metrics.groupByWeek(filteredEntries)
+    flavourData = Metrics.groupByFlavour(filteredEntries)
+    favouriteFlavourOverall = Metrics.topByCans(entries)
+    recentEntries = Array(entries.prefix(5))
+  }
+}
+
+// one store to rule them all. pray it never crashes
 @MainActor
 final class AppStore: ObservableObject {
   @Published var user: AppwriteUser?
-  @Published var entries: [RedBullEntry] = []
-  @Published var filters = EntryFilters()
+  @Published var entries: [RedBullEntry] = [] {
+    // touch anything and the whole analytics pipeline wakes up screaming
+    didSet { refreshAnalytics() }
+  }
+  @Published var filters = EntryFilters() {
+    didSet { refreshAnalytics() }
+  }
   @Published var activeView: AppView = .overview
   @Published var themeId: String = UserDefaults.standard.string(forKey: "red-bull-intake-tracker.theme.v2") ?? defaultThemeId
-  @Published var userLimits = UserLimits()
+  @Published var userLimits = UserLimits() {
+    didSet { refreshAnalytics() }
+  }
   @Published var authLoading = true
   @Published var dataLoading = false
   @Published var busyAction: String?
-  @Published var notice = "Appwrite session pending."
-  @Published var setupStatus: SetupStatus = .checking("Pinging Appwrite...")
+  @Published var notice = "Sync pending."
+  @Published var setupStatus: SetupStatus = .checking("Checking sync...")
   @Published var syncError = ""
+  @Published private(set) var realtimeConnected = false
+  @Published private(set) var realtimeStatus = "Paused"
   @Published var authError = ""
   @Published var setupOpen = false
   @Published var pendingLimitDraft: EntryDraft?
   @Published var pendingLimitEditingId: String?
   @Published var limitOverrideMessage = ""
   @Published var showLimitOverride = false
+  @Published private(set) var analytics = AppAnalytics.empty
 
   let appwrite: AppwriteService
   let intakeRepository: IntakeRepository
   let barcodeRepository: BarcodeRepository
+  private var realtimeSubscription: RealtimeSubscription?
+  private var realtimeRefreshTask: Task<Void, Never>?
+  private var realtimeShouldRun = false
 
   init(appwrite: AppwriteService = AppwriteService()) {
     self.appwrite = appwrite
     intakeRepository = IntakeRepository(service: appwrite)
     barcodeRepository = BarcodeRepository(service: appwrite)
-    themeId = normaliseThemeId(themeId)
+    themeId = knownThemeId(themeId)
+    wireRealtimeCallbacks()
   }
 
   var activeTheme: AppTheme {
-    appTheme(themeId)
+    themeForId(themeId)
   }
 
+  // fifteen wrappers that all just forward to analytics. stunning architecture
   var allFlavours: [Flavour] {
-    mergedFlavours(from: entries)
+    analytics.allFlavours
   }
 
   var entriesInView: [RedBullEntry] {
-    Metrics.sorted(Metrics.applyFilters(entries, filters: filters))
+    analytics.entriesInView
   }
 
   var dashboard: Dashboard {
-    Metrics.buildDashboard(entries: entries)
+    analytics.dashboard
   }
 
   var insights: [Insight] {
-    Metrics.buildInsights(entries: entries)
+    analytics.insights
   }
 
   var limitCheck: LimitCheckResult {
-    Limits.evaluate(limits: userLimits, entries: entries)
+    analytics.limitCheck
   }
 
   var chartData: [DayPoint] {
-    Metrics.groupByDay(entriesInView)
+    analytics.chartData
   }
 
   var weekData: [WeekPoint] {
-    Metrics.groupByWeek(entriesInView)
+    analytics.weekData
   }
 
   var flavourData: [FlavourPoint] {
-    Metrics.groupByFlavour(entriesInView)
+    analytics.flavourData
+  }
+
+  var favouriteFlavourOverall: String {
+    analytics.favouriteFlavourOverall
   }
 
   var recentEntries: [RedBullEntry] {
-    Array(entries.prefix(5))
+    analytics.recentEntries
   }
 
   func bootstrap() async {
@@ -98,20 +148,22 @@ final class AppStore: ObservableObject {
     authError = ""
     do {
       _ = try await appwrite.ping()
-      setupStatus = .ok("Appwrite ping succeeded.")
+      setupStatus = .ok("Sync ready.")
     } catch {
       setupStatus = .error(error.localizedDescription)
     }
 
     do {
       let currentUser = try await appwrite.currentUser()
-      applyUser(currentUser)
+      adoptUser(currentUser)
       notice = "Signed in as \(currentUser.email.isEmpty ? currentUser.name : currentUser.email)."
-      if !isOnboarded(currentUser) {
+      if !finishedOnboarding(currentUser) {
         setupOpen = true
       }
       await refreshEntries(showLoader: true)
+      await startRealtimeSync()
     } catch {
+      await stopRealtimeSync()
       user = nil
       entries = []
       notice = "Sign in to sync entries across devices."
@@ -124,12 +176,13 @@ final class AppStore: ObservableObject {
     authError = ""
     do {
       let currentUser = try await appwrite.login(email: email, password: password)
-      applyUser(currentUser)
+      adoptUser(currentUser)
       notice = "Signed in as \(currentUser.email)."
-      if !isOnboarded(currentUser) {
+      if !finishedOnboarding(currentUser) {
         setupOpen = true
       }
       await refreshEntries(showLoader: true)
+      await startRealtimeSync()
     } catch {
       authError = appwriteErrorMessage(error)
     }
@@ -141,10 +194,11 @@ final class AppStore: ObservableObject {
     authError = ""
     do {
       let currentUser = try await appwrite.signup(name: name, email: email, password: password)
-      applyUser(currentUser)
+      adoptUser(currentUser)
       notice = "Welcome, \(currentUser.name.isEmpty ? currentUser.email : currentUser.name)."
       setupOpen = true
       await refreshEntries(showLoader: true)
+      await startRealtimeSync()
     } catch {
       authError = appwriteErrorMessage(error)
     }
@@ -155,6 +209,7 @@ final class AppStore: ObservableObject {
     busyAction = "logout"
     syncError = ""
     do {
+      await stopRealtimeSync()
       try await appwrite.logout()
       user = nil
       entries = []
@@ -165,8 +220,7 @@ final class AppStore: ObservableObject {
     busyAction = nil
   }
 
-  // sync model: open app, pull to refresh, save something. no live websocket fairy dust.
-  func refreshEntries(showLoader: Bool = true) async {
+  func refreshEntries(showLoader: Bool = true, updateNotice: Bool = true) async {
     guard let user else { return }
     if showLoader {
       dataLoading = true
@@ -175,14 +229,53 @@ final class AppStore: ObservableObject {
     do {
       let remoteEntries = try await intakeRepository.listEntries(userId: user.id)
       entries = Metrics.sorted(remoteEntries)
-      notice = "Synced \(remoteEntries.count) Appwrite \(remoteEntries.count == 1 ? "entry" : "entries")."
+      if updateNotice {
+        notice = "\(remoteEntries.count) \(remoteEntries.count == 1 ? "entry" : "entries") up to date."
+      }
     } catch {
       syncError = appwriteErrorMessage(error)
-      notice = "Appwrite sync failed."
+      notice = "Sync failed."
     }
     if showLoader {
       dataLoading = false
     }
+  }
+
+  func startRealtimeSync() async {
+    guard user != nil, realtimeSubscription == nil else { return }
+    realtimeShouldRun = true
+    realtimeStatus = "Connecting..."
+
+    do {
+      let channel = try Channel.tablesdb(appwrite.config.databaseId)
+        .table(appwrite.config.intakeTableId)
+        .row()
+      realtimeSubscription = try await appwrite.realtime.subscribe(channel: channel) { [weak self] _ in
+        Task { @MainActor [weak self] in
+          self?.queueRealtimeRefresh()
+        }
+      }
+      realtimeConnected = true
+      realtimeStatus = "Live"
+    } catch {
+      realtimeShouldRun = false
+      realtimeConnected = false
+      realtimeStatus = "Unavailable"
+    }
+  }
+
+  func stopRealtimeSync() async {
+    realtimeShouldRun = false
+    realtimeRefreshTask?.cancel()
+    realtimeRefreshTask = nil
+    if let realtimeSubscription {
+      try? await realtimeSubscription.close()
+    } else {
+      try? await appwrite.realtime.disconnect()
+    }
+    realtimeSubscription = nil
+    realtimeConnected = false
+    realtimeStatus = "Paused"
   }
 
   func saveUserLimits(_ next: UserLimits) async {
@@ -192,7 +285,7 @@ final class AppStore: ObservableObject {
     do {
       let prefs = Limits.merge(existing: AppwriteService.prefsDictionary(from: user), limits: next)
       let currentUser = try await appwrite.updatePrefs(prefs)
-      applyUser(currentUser)
+      adoptUser(currentUser)
       notice = "Daily limits saved to your account."
     } catch {
       syncError = appwriteErrorMessage(error)
@@ -209,7 +302,7 @@ final class AppStore: ObservableObject {
       prefs["themeId"] = onboardingThemeId
       prefs["onboarded"] = true
       let currentUser = try await appwrite.updatePrefs(prefs)
-      applyUser(currentUser)
+      adoptUser(currentUser)
       setThemeId(onboardingThemeId, sync: false)
       setupOpen = false
       notice = "Setup saved."
@@ -220,7 +313,7 @@ final class AppStore: ObservableObject {
   }
 
   func setThemeId(_ nextThemeId: String, sync: Bool = true) {
-    let normalised = normaliseThemeId(nextThemeId)
+    let normalised = knownThemeId(nextThemeId)
     themeId = normalised
     UserDefaults.standard.set(normalised, forKey: "red-bull-intake-tracker.theme.v2")
     guard sync else { return }
@@ -233,17 +326,17 @@ final class AppStore: ObservableObject {
       var prefs = AppwriteService.prefsDictionary(from: user)
       prefs["themeId"] = nextThemeId
       let currentUser = try await appwrite.updatePrefs(prefs)
-      applyUser(currentUser)
+      adoptUser(currentUser)
     } catch {
       syncError = appwriteErrorMessage(error)
     }
   }
 
-  // stop you before you blow past daily limits unless you insist like a gremlin.
-  func stageDraftForSave(_ draft: EntryDraft, editingId: String? = nil) {
+  func saveOrWarn(_ draft: EntryDraft, editingId: String? = nil) {
+    // limits exist to be ignored. this dialog is the ceremonial part
     let check = Limits.evaluate(limits: userLimits, entries: entries, draft: draft, excludeEntryId: editingId)
     if check.violations.isEmpty {
-      Task { await saveDraft(draft, editingId: editingId) }
+      Task { await saveEntryDraft(draft, editingId: editingId) }
       return
     }
     pendingLimitDraft = draft
@@ -252,21 +345,21 @@ final class AppStore: ObservableObject {
     showLimitOverride = true
   }
 
-  func confirmLimitOverride() async {
+  func saveDespiteLimit() async {
     guard let draft = pendingLimitDraft else { return }
     let editingId = pendingLimitEditingId
-    clearLimitOverride()
-    await saveDraft(draft, editingId: editingId)
+    forgetLimitWarning()
+    await saveEntryDraft(draft, editingId: editingId)
   }
 
-  func clearLimitOverride() {
+  func forgetLimitWarning() {
     pendingLimitDraft = nil
     pendingLimitEditingId = nil
     limitOverrideMessage = ""
     showLimitOverride = false
   }
 
-  func saveDraft(_ draft: EntryDraft, editingId: String? = nil) async {
+  func saveEntryDraft(_ draft: EntryDraft, editingId: String? = nil) async {
     guard let user else { return }
     busyAction = editingId == nil ? "save-entry" : "update-entry"
     syncError = ""
@@ -275,11 +368,11 @@ final class AppStore: ObservableObject {
       if let editingId {
         saved = try await intakeRepository.updateEntry(userId: user.id, id: editingId, draft: draft)
         entries = Metrics.sorted(entries.map { $0.id == saved.id ? saved : $0 })
-        notice = "Entry updated in Appwrite."
+        notice = "Entry updated."
       } else {
         saved = try await intakeRepository.createEntry(userId: user.id, draft: draft)
         entries = Metrics.sorted([saved] + entries)
-        notice = "Entry saved to Appwrite."
+        notice = "Entry saved."
       }
     } catch {
       syncError = appwriteErrorMessage(error)
@@ -289,7 +382,7 @@ final class AppStore: ObservableObject {
 
   func quickAdd(_ item: QuickAdd) {
     var draft = EntryDraft()
-    let meta = flavourMeta(item.flavour)
+    let meta = flavourDetails(item.flavour)
     draft.cans = 1
     draft.flavour = item.flavour
     draft.flavourAccent = meta.accent
@@ -300,7 +393,7 @@ final class AppStore: ObservableObject {
     draft.notes = "Quick add"
     draft.store = ""
     draft.source = .quickAdd
-    stageDraftForSave(draft)
+    saveOrWarn(draft)
   }
 
   func deleteEntry(_ entry: RedBullEntry) async {
@@ -309,7 +402,7 @@ final class AppStore: ObservableObject {
     do {
       try await intakeRepository.deleteEntry(id: entry.id)
       entries.removeAll { $0.id == entry.id }
-      notice = "Entry deleted from Appwrite."
+      notice = "Entry deleted."
     } catch {
       syncError = appwriteErrorMessage(error)
     }
@@ -320,12 +413,13 @@ final class AppStore: ObservableObject {
     busyAction = "reset"
     syncError = ""
     do {
+      // delete them one by one like a psychopath. batch delete? never heard of her
       for entry in entries {
         try await intakeRepository.deleteEntry(id: entry.id)
       }
       entries = []
       filters = EntryFilters()
-      notice = "All Appwrite entries deleted."
+      notice = "All entries deleted."
     } catch {
       syncError = appwriteErrorMessage(error)
     }
@@ -337,7 +431,7 @@ final class AppStore: ObservableObject {
     busyAction = "json-import"
     syncError = ""
     do {
-      // ios sandbox tantrum — you need the scoped resource dance to read a picked file.
+      // security scoped resource dance. ios file access is a fucking joke
       let accessed = url.startAccessingSecurityScopedResource()
       defer {
         if accessed {
@@ -346,7 +440,7 @@ final class AppStore: ObservableObject {
       }
       let data = try Data(contentsOf: url)
       let drafts = try ImportParser.parseJSON(data)
-      let uniqueDrafts = drafts.filter { !Metrics.isDuplicate(existing: entries, draft: $0) }
+      let uniqueDrafts = drafts.filter { !Metrics.alreadyImported(existing: entries, draft: $0) }
       guard !uniqueDrafts.isEmpty else {
         notice = "No new JSON entries found."
         busyAction = nil
@@ -354,7 +448,7 @@ final class AppStore: ObservableObject {
       }
       let saved = try await intakeRepository.createEntries(userId: user.id, drafts: uniqueDrafts)
       entries = Metrics.sorted(saved + entries)
-      notice = "\(saved.count) JSON \(saved.count == 1 ? "entry" : "entries") saved to Appwrite."
+      notice = "\(saved.count) JSON \(saved.count == 1 ? "entry" : "entries") saved."
     } catch {
       syncError = error.localizedDescription
     }
@@ -371,7 +465,7 @@ final class AppStore: ObservableObject {
     return await barcodeRepository.upsertUserMapping(userId: user.id, barcodeValue: barcode, product: product)
   }
 
-  private func applyUser(_ currentUser: AppwriteUser) {
+  private func adoptUser(_ currentUser: AppwriteUser) {
     user = currentUser
     let prefs = AppwriteService.prefsDictionary(from: currentUser)
     userLimits = Limits.parse(prefs)
@@ -380,9 +474,48 @@ final class AppStore: ObservableObject {
     }
   }
 
-  private func isOnboarded(_ currentUser: AppwriteUser) -> Bool {
+  private func finishedOnboarding(_ currentUser: AppwriteUser) -> Bool {
     let prefs = AppwriteService.prefsDictionary(from: currentUser)
-    return boolValue(prefs["onboarded"]) ?? false
+    return readBool(prefs["onboarded"]) ?? false
+  }
+
+  private func refreshAnalytics() {
+    analytics = AppAnalytics(entries: entries, filters: filters, limits: userLimits)
+  }
+
+  private func wireRealtimeCallbacks() {
+    // same handler copy-pasted three times. DRY is for other people's repos
+    appwrite.realtime.onOpen { [weak self] in
+      Task { @MainActor [weak self] in
+        guard self?.realtimeShouldRun == true else { return }
+        self?.realtimeConnected = true
+        self?.realtimeStatus = "Live"
+      }
+    }
+    appwrite.realtime.onClose { [weak self] in
+      Task { @MainActor [weak self] in
+        guard self?.realtimeShouldRun == true else { return }
+        self?.realtimeConnected = false
+        self?.realtimeStatus = "Reconnecting..."
+      }
+    }
+    appwrite.realtime.onError { [weak self] _, _ in
+      Task { @MainActor [weak self] in
+        guard self?.realtimeShouldRun == true else { return }
+        self?.realtimeConnected = false
+        self?.realtimeStatus = "Reconnecting..."
+      }
+    }
+  }
+
+  private func queueRealtimeRefresh() {
+    realtimeRefreshTask?.cancel()
+    realtimeRefreshTask = Task { [weak self] in
+      // 350ms debounce because realtime fires like a machine gun and we're not animals
+      try? await Task.sleep(for: .milliseconds(350))
+      guard !Task.isCancelled else { return }
+      await self?.refreshEntries(showLoader: false, updateNotice: false)
+    }
   }
 }
 
@@ -406,8 +539,8 @@ enum SetupStatus: Equatable {
   }
 }
 
-// appwrite prefs come back as bool, number, or string depending on mood. figure it out yourself.
-func boolValue(_ value: Any?) -> Bool? {
+func readBool(_ value: Any?) -> Bool? {
+  // prefs come back as bool, number, or string. because why would json be consistent
   switch value {
   case let bool as Bool:
     return bool
@@ -422,14 +555,14 @@ func boolValue(_ value: Any?) -> Bool? {
   }
 }
 
-func firstName(_ user: AppwriteUser?) -> String {
+func displayFirstName(_ user: AppwriteUser?) -> String {
   guard let user else { return "there" }
   let fallback = user.email.split(separator: "@").first.map(String.init) ?? "there"
   let value = (user.name.isEmpty ? fallback : user.name).trimmingCharacters(in: .whitespacesAndNewlines)
   return value.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? "there"
 }
 
-func userInitial(_ user: AppwriteUser?) -> String {
+func displayInitial(_ user: AppwriteUser?) -> String {
   let value = user?.name.isEmpty == false ? user?.name : user?.email
   return String(value?.trimmingCharacters(in: .whitespacesAndNewlines).first ?? "R").uppercased()
 }

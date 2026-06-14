@@ -22,14 +22,15 @@ struct EntryEditorView: View {
   init(sheet: EntrySheet, onSave: @escaping (EntryDraft) -> Void) {
     self.sheet = sheet
     self.onSave = onSave
+    // twelve @State vars because swiftui hates simple forms
     let draft = sheet.draft
     let isCustomFlavour = !builtInFlavours.contains(where: { $0.name == draft.flavour })
-    _cans = State(initialValue: Metrics.one(draft.cans))
+    _cans = State(initialValue: "\(max(1, Int(draft.cans.rounded(.toNearestOrAwayFromZero))))")
     _pricePerCan = State(initialValue: String(format: "%.2f", draft.pricePerCan))
     _selectedFlavour = State(initialValue: isCustomFlavour ? "Other" : draft.flavour)
     _customFlavour = State(initialValue: isCustomFlavour ? draft.flavour : "")
     _customAccent = State(initialValue: draft.flavourAccent.isEmpty ? "#b85d84" : draft.flavourAccent)
-    _sizePreset = State(initialValue: Self.sizePreset(for: draft.sizeMl))
+    _sizePreset = State(initialValue: Self.preset(for: draft.sizeMl))
     _customSize = State(initialValue: "\(draft.sizeMl)")
     _caffeineOverride = State(initialValue: draft.caffeineMgPerCan.map { Metrics.one($0) } ?? "")
     _date = State(initialValue: draft.date)
@@ -41,12 +42,40 @@ struct EntryEditorView: View {
   var body: some View {
     NavigationStack {
       Form {
-        Section("Drink") {
-          TextField("Number of cans", text: $cans)
-            .keyboardType(.decimalPad)
-          TextField("Price per can", text: $pricePerCan)
-            .keyboardType(.decimalPad)
+        Section("How many?") {
+          Text("Log whole cans so your daily total stays easy to understand.")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
 
+          HStack(spacing: 16) {
+            Button {
+              nudgeCanCount(by: -1)
+            } label: {
+              Image(systemName: "minus")
+            }
+            .glassButton()
+            .disabled(canCount <= 1)
+
+            VStack(spacing: 2) {
+              Text("\(canCount)")
+                .font(.largeTitle.weight(.bold))
+              Text(canCount == 1 ? "can" : "cans")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+
+            Button {
+              nudgeCanCount(by: 1)
+            } label: {
+              Image(systemName: "plus")
+            }
+            .glassButton()
+            .disabled(canCount >= 20)
+          }
+        }
+
+        Section("Drink") {
           Picker("Flavour", selection: $selectedFlavour) {
             ForEach(store.allFlavours) { flavour in
               Text(flavour.name).tag(flavour.name)
@@ -54,22 +83,27 @@ struct EntryEditorView: View {
           }
           .onChange(of: selectedFlavour) { _, newValue in
             guard newValue != "Other" else { return }
-            let meta = flavourMeta(newValue)
+            let meta = flavourDetails(newValue)
             customAccent = meta.accent
             sugarFree = meta.sugarFree
           }
 
           if selectedFlavour == "Other" {
             TextField("Custom flavour", text: $customFlavour)
-            TextField("Accent hex", text: $customAccent)
-              .textInputAutocapitalization(.never)
           }
 
-          Picker("Can size", selection: $sizePreset) {
-            Text("250ml").tag("250")
-            Text("355ml").tag("355")
-            Text("473ml").tag("473")
-            Text("Custom").tag("custom")
+          VStack(alignment: .leading, spacing: 8) {
+            Text("Can size")
+              .font(.subheadline)
+              .foregroundStyle(.secondary)
+            Picker("Can size", selection: $sizePreset) {
+              Text("250").tag("250")
+              Text("355").tag("355")
+              Text("473").tag("473")
+              Text("Other").tag("custom")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
           }
           .onChange(of: sizePreset) { _, newValue in
             guard newValue != "custom", let size = Int(newValue) else { return }
@@ -79,33 +113,70 @@ struct EntryEditorView: View {
           }
 
           if sizePreset == "custom" {
-            TextField("Custom size in ml", text: $customSize)
-              .keyboardType(.numberPad)
+            HStack {
+              Text("Custom size")
+              Spacer()
+              TextField("250", text: $customSize)
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.trailing)
+                .frame(maxWidth: 90)
+              Text("ml")
+                .foregroundStyle(.secondary)
+            }
           }
 
-          TextField("Caffeine override mg/can", text: $caffeineOverride)
-            .keyboardType(.decimalPad)
+          HStack {
+            Text("Price per can")
+            Spacer()
+            Text("£")
+              .foregroundStyle(.secondary)
+            TextField("0.00", text: $pricePerCan)
+              .keyboardType(.decimalPad)
+              .multilineTextAlignment(.trailing)
+              .frame(maxWidth: 90)
+          }
 
           Toggle("Count as sugar-free / zero sugar", isOn: $sugarFree)
+
+          DisclosureGroup("More drink details") {
+            VStack(spacing: 12) {
+              if selectedFlavour == "Other" {
+                TextField("Colour hex", text: $customAccent)
+                  .textInputAutocapitalization(.never)
+              }
+              HStack {
+                Text("Caffeine per can")
+                Spacer()
+                TextField("Automatic", text: $caffeineOverride)
+                  .keyboardType(.decimalPad)
+                  .multilineTextAlignment(.trailing)
+                  .frame(maxWidth: 100)
+                Text("mg")
+                  .foregroundStyle(.secondary)
+              }
+            }
+            .padding(.top, 8)
+          }
         }
 
-        Section("When") {
+        Section("When and where") {
           DatePicker("Date and time", selection: $date)
-        }
-
-        Section("Context") {
           TextField("Location or store", text: $storeName)
           TextField("Notes", text: $notes, axis: .vertical)
             .lineLimit(3...6)
         }
 
-        Section("Preview") {
+        Section("Summary") {
+          LabeledContent("Amount") {
+            Text("\(canCount) \(canCount == 1 ? "can" : "cans"), \(numericSize)ml")
+              .fontWeight(.semibold)
+          }
           LabeledContent("Caffeine per can") {
             Text("\(Metrics.whole(caffeinePreview))mg")
               .fontWeight(.semibold)
           }
           LabeledContent("Estimated spend") {
-            Text(Metrics.money((Double(cans) ?? 1) * (Double(pricePerCan) ?? 0)))
+            Text(Metrics.money(Double(canCount) * (Double(pricePerCan) ?? 0)))
               .fontWeight(.semibold)
           }
         }
@@ -123,7 +194,7 @@ struct EntryEditorView: View {
         }
         ToolbarItem(placement: .confirmationAction) {
           Button(sheet.entry == nil ? "Log" : "Save") {
-            onSave(makeDraft())
+            onSave(draftFromForm())
           }
           .disabled(!isValid)
         }
@@ -132,10 +203,13 @@ struct EntryEditorView: View {
   }
 
   private var isValid: Bool {
-    (Double(cans) ?? 0) > 0 &&
-      (Double(pricePerCan) ?? -1) >= 0 &&
+    (Double(pricePerCan) ?? -1) >= 0 &&
       numericSize > 0 &&
       !finalFlavour.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  private var canCount: Int {
+    min(20, max(1, Int(cans) ?? 1))
   }
 
   private var numericSize: Int {
@@ -153,13 +227,12 @@ struct EntryEditorView: View {
     Metrics.caffeinePerCan(sizeMl: numericSize, override: Double(caffeineOverride))
   }
 
-  // strings in, typed draft out — half the form is text fields so this is where the mess gets cleaned up.
-  private func makeDraft() -> EntryDraft {
-    let meta = flavourMeta(finalFlavour)
+  private func draftFromForm() -> EntryDraft {
+    let meta = flavourDetails(finalFlavour)
     var draft = EntryDraft()
-    draft.cans = max(0.25, Double(cans) ?? 1)
+    draft.cans = Double(canCount)
     draft.flavour = finalFlavour
-    draft.flavourAccent = selectedFlavour == "Other" ? (customAccent.isEmpty ? accentForCustomFlavour(finalFlavour) : customAccent) : meta.accent
+    draft.flavourAccent = selectedFlavour == "Other" ? (customAccent.isEmpty ? customFlavourAccent(finalFlavour) : customAccent) : meta.accent
     draft.sizeMl = numericSize
     draft.pricePerCan = max(0, Double(pricePerCan) ?? 0)
     draft.date = date
@@ -171,7 +244,11 @@ struct EntryEditorView: View {
     return draft
   }
 
-  private static func sizePreset(for size: Int) -> String {
+  private func nudgeCanCount(by amount: Int) {
+    cans = "\(min(20, max(1, canCount + amount)))"
+  }
+
+  private static func preset(for size: Int) -> String {
     [250, 355, 473].contains(size) ? "\(size)" : "custom"
   }
 }

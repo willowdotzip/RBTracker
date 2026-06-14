@@ -25,6 +25,7 @@ struct BarcodeScannerSheet: View {
   @State private var message = "Point your camera at the barcode on the can."
 
   var body: some View {
+    // camera permissions, avfoundation, manual fallback. all for one can of bull
     NavigationStack {
       ScrollView {
         VStack(spacing: 16) {
@@ -56,7 +57,7 @@ struct BarcodeScannerSheet: View {
         .font(.subheadline)
         .foregroundStyle(.secondary)
       BarcodeCameraView { code in
-        resolve(code)
+        lookUpBarcode(code)
       } onError: { errorMessage in
         message = errorMessage
       }
@@ -78,7 +79,7 @@ struct BarcodeScannerSheet: View {
           .keyboardType(.numberPad)
           .textFieldStyle(.roundedBorder)
         Button("Lookup") {
-          resolve(typedBarcode)
+          lookUpBarcode(typedBarcode)
         }
         .glassButton()
       }
@@ -136,7 +137,7 @@ struct BarcodeScannerSheet: View {
           .font(.subheadline)
 
           Button {
-            Task { await saveManualProduct(barcode: barcode) }
+            Task { await saveMappedProduct(barcode: barcode) }
           } label: {
             if savingMapping {
               ProgressView()
@@ -155,44 +156,43 @@ struct BarcodeScannerSheet: View {
       flavourName: manualFlavour,
       sizeMl: Int(manualSize) ?? 250,
       pricePerCan: max(0, Double(manualPrice) ?? 0),
-      sugarFree: manualSugarFree || flavourMeta(manualFlavour).sugarFree,
+      sugarFree: manualSugarFree || flavourDetails(manualFlavour).sugarFree,
       caffeineMgPerCan: Double(manualCaffeine)
     )
   }
 
-  private func resolve(_ value: String) {
+  private func lookUpBarcode(_ value: String) {
     let normalized = BarcodeLookup.normalize(value)
     guard !normalized.isEmpty else {
       message = "Enter a barcode number first."
       return
     }
     typedBarcode = normalized
-    // barcodes are messy as hell, so built-ins, user mappings, and manual fixes all get a turn.
     switch BarcodeLookup.lookup(normalized, catalog: catalog) {
     case .known(let barcode, let product), .user(let barcode, let product):
       message = "Barcode found."
       phase = .found(barcode, product)
     case .partial(let barcode, let draft, let reason):
-      applyManualDefaults(draft)
+      fillManualFields(draft)
       message = "Barcode found, but it needs a product mapping."
       phase = .manual(barcode, reason)
     case .unknown(let barcode):
-      applyManualDefaults(nil)
+      fillManualFields(nil)
       message = "Barcode found, but this product is not mapped yet."
       phase = .manual(barcode, "Add the drink details once and future scans can reuse them.")
     }
   }
 
-  private func applyManualDefaults(_ draft: BarcodeProductDraft?) {
+  private func fillManualFields(_ draft: BarcodeProductDraft?) {
     manualFlavour = builtInFlavours.contains(where: { $0.name == draft?.flavourName }) ? draft?.flavourName ?? defaultFlavour.name : defaultFlavour.name
     let size = draft?.sizeMl ?? 250
     manualSize = [250, 355, 473].contains(size) ? "\(size)" : "250"
     manualPrice = String(format: "%.2f", draft?.pricePerCan ?? Metrics.defaultPrice(for: size))
-    manualSugarFree = draft?.sugarFree ?? flavourMeta(manualFlavour).sugarFree
+    manualSugarFree = draft?.sugarFree ?? flavourDetails(manualFlavour).sugarFree
     manualCaffeine = draft?.caffeineMgPerCan.map { Metrics.one($0) } ?? ""
   }
 
-  private func saveManualProduct(barcode: String) async {
+  private func saveMappedProduct(barcode: String) async {
     savingMapping = true
     let mapping = await store.saveBarcodeMapping(barcode: barcode, product: manualProduct)
     if let mapping {
@@ -200,7 +200,7 @@ struct BarcodeScannerSheet: View {
     }
     let resolved = BarcodeLookup.resolve(manualProduct, source: mapping == nil ? .builtIn : .user)
     phase = .found(barcode, resolved)
-    message = mapping == nil ? "Saved locally for future scans." : "Saved to Appwrite and cached locally."
+    message = mapping == nil ? "Saved locally for future scans." : "Saved to your account and cached locally."
     savingMapping = false
   }
 }
@@ -211,7 +211,7 @@ struct ProductPreview: View {
   var body: some View {
     HStack(spacing: 12) {
       Circle()
-        .fill(Color(hex: product.flavourAccent))
+        .fill(Color(hex: flavourDetails(product.flavourName).accent))
         .frame(width: 18, height: 18)
       VStack(alignment: .leading, spacing: 3) {
         Text(product.flavourName)
@@ -230,11 +230,10 @@ struct ProductPreview: View {
       }
     }
     .padding(12)
-    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .background(Color(.secondarySystemGroupedBackground).opacity(0.62), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
   }
 }
 
-// swiftui meets avfoundation here. uikit bridge because apple loves making simple things annoying.
 struct BarcodeCameraView: UIViewControllerRepresentable {
   var onCode: (String) -> Void
   var onError: (String) -> Void
@@ -260,7 +259,7 @@ final class BarcodeCameraViewController: UIViewController, AVCaptureMetadataOutp
   override func viewDidLoad() {
     super.viewDidLoad()
     view.backgroundColor = .black
-    configure()
+    askForCameraThenStart()
   }
 
   override func viewDidLayoutSubviews() {
@@ -284,14 +283,14 @@ final class BarcodeCameraViewController: UIViewController, AVCaptureMetadataOutp
     }
   }
 
-  private func configure() {
+  private func askForCameraThenStart() {
     switch AVCaptureDevice.authorizationStatus(for: .video) {
     case .authorized:
-      configureSession()
+      buildCaptureSession()
     case .notDetermined:
       AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
         DispatchQueue.main.async {
-          granted ? self?.configureSession() : self?.onError?("Camera permission is needed to scan barcodes.")
+          granted ? self?.buildCaptureSession() : self?.onError?("Camera permission is needed to scan barcodes.")
         }
       }
     default:
@@ -299,7 +298,7 @@ final class BarcodeCameraViewController: UIViewController, AVCaptureMetadataOutp
     }
   }
 
-  private func configureSession() {
+  private func buildCaptureSession() {
     guard let device = AVCaptureDevice.default(for: .video) else {
       onError?("No camera is available on this device.")
       return
@@ -339,7 +338,7 @@ final class BarcodeCameraViewController: UIViewController, AVCaptureMetadataOutp
 
     let normalized = BarcodeLookup.normalize(raw)
     let now = Date()
-    // camera fires the same code every frame; throttle or your ears will hate the beep spam.
+    // scanners love shouting the same number. shut up already
     if normalized == lastCode, now.timeIntervalSince(lastCodeAt) < 1.5 {
       return
     }

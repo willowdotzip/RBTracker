@@ -38,6 +38,7 @@
 		A2000000000000000000000C /* AppConfig.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = AppConfig.plist; sourceTree = "<group>"; };
 		A2000000000000000000000D /* verified-barcodes.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "verified-barcodes.json"; sourceTree = "<group>"; };
 		A2000000000000000000000E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A20000000000000000000010 /* RedBullTrackeriOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RedBullTrackeriOS.entitlements; sourceTree = "<group>"; };
 		A2000000000000000000000F /* RedBullTrackeriOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RedBullTrackeriOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -73,6 +74,7 @@
 				A2000000000000000000000B /* Assets.xcassets */,
 				A2000000000000000000000C /* AppConfig.plist */,
 				A2000000000000000000000E /* Info.plist */,
+				A20000000000000000000010 /* RedBullTrackeriOS.entitlements */,
 			);
 			path = RedBullTrackeriOS;
 			sourceTree = "<group>";
@@ -154,7 +156,7 @@
 			);
 			mainGroup = A40000000000000000000001;
 			packageReferences = (
-				A70000000000000000000001 /* XCRemoteSwiftPackageReference "sdk-for-swift" */,
+				A70000000000000000000001 /* XCRemoteSwiftPackageReference "sdk-for-apple" */,
 			);
 			productRefGroup = A40000000000000000000005 /* Products */;
 			projectDirPath = "";
@@ -254,9 +256,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = RedBullTrackeriOS/RedBullTrackeriOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = PDXUHH53WF;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = RedBullTrackeriOS/Info.plist;
@@ -265,7 +267,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.redbulltrackerios;
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.rbtracker;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -278,9 +280,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = RedBullTrackeriOS/RedBullTrackeriOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = PDXUHH53WF;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = RedBullTrackeriOS/Info.plist;
@@ -289,7 +291,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.redbulltrackerios;
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.rbtracker;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -322,12 +324,12 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		A70000000000000000000001 /* XCRemoteSwiftPackageReference "sdk-for-swift" */ = {
+		A70000000000000000000001 /* XCRemoteSwiftPackageReference "sdk-for-apple" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/appwrite/sdk-for-swift";
+			repositoryURL = "https://github.com/appwrite/sdk-for-apple";
 			requirement = {
-				branch = main;
-				kind = branch;
+				kind = upToNextMajorVersion;
+				minimumVersion = 18.1.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -335,7 +337,7 @@
 /* Begin XCSwiftPackageProductDependency section */
 		A70000000000000000000002 /* Appwrite */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = A70000000000000000000001 /* XCRemoteSwiftPackageReference "sdk-for-swift" */;
+			package = A70000000000000000000001 /* XCRemoteSwiftPackageReference "sdk-for-apple" */;
 			productName = Appwrite;
 		};
 /* End XCSwiftPackageProductDependency section */

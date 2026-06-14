@@ -13,7 +13,7 @@ pull requests are welcome. rbtracker is solo-maintained, so please bear with res
 ## pull requests
 
 - open an issue first to discuss what you want to change (unless it's a tiny fix)
-- keep PRs focused — one thing per PR
+- keep PRs focused, one thing per PR
 - test your changes on an iOS 17+ simulator or device
 - update the README if your change affects setup or usage
 

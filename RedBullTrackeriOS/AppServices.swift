@@ -15,11 +15,12 @@ struct AppConfig: Codable {
   var chatTableId: String
   var coachProxyURL: String
 
-  static func load() -> AppConfig {
+  static func readFromBundle() -> AppConfig {
     guard let url = Bundle.main.url(forResource: "AppConfig", withExtension: "plist"),
           let data = try? Data(contentsOf: url),
           let config = try? PropertyListDecoder().decode(AppConfig.self, from: data)
     else {
+      // plist missing? here's a config that definitely won't work. you're welcome
       return AppConfig(
         endpoint: "https://your-appwrite-endpoint/v1",
         projectId: "your-project-id",
@@ -35,11 +36,36 @@ struct AppConfig: Codable {
 }
 
 enum KeychainSessionStore {
-  static let service = "com.example.redbulltrackerios"
+  static let service = "com.example.rbtracker"
   static let account = "appwrite-session-secret"
+  private static let fallbackDefaultsKey = "appwrite-session-secret"
 
-  // keep the login around; nobody wants to type their password every damn launch.
   static func read() -> String? {
+    #if targetEnvironment(simulator)
+    // keychain on simulator? fuck that. userdefaults it is. ship it
+    return UserDefaults.standard.string(forKey: fallbackDefaultsKey)
+    #else
+    return readFromKeychain()
+    #endif
+  }
+
+  static func save(_ value: String) throws {
+    #if targetEnvironment(simulator)
+    UserDefaults.standard.set(value, forKey: fallbackDefaultsKey)
+    #else
+    try saveToKeychain(value)
+    #endif
+  }
+
+  static func delete() throws {
+    #if targetEnvironment(simulator)
+    UserDefaults.standard.removeObject(forKey: fallbackDefaultsKey)
+    #else
+    try deleteFromKeychain()
+    #endif
+  }
+
+  private static func readFromKeychain() -> String? {
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: service,
@@ -57,8 +83,8 @@ enum KeychainSessionStore {
     return value
   }
 
-  static func save(_ value: String) throws {
-    try delete()
+  private static func saveToKeychain(_ value: String) throws {
+    try deleteFromKeychain()
     let data = Data(value.utf8)
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
@@ -73,7 +99,7 @@ enum KeychainSessionStore {
     }
   }
 
-  static func delete() throws {
+  private static func deleteFromKeychain() throws {
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: service,
@@ -99,18 +125,20 @@ final class AppwriteService {
   let client: Client
   let account: Account
   let tables: TablesDB
+  let realtime: Realtime
 
-  init(config: AppConfig = .load()) {
+  init(config: AppConfig = .readFromBundle()) {
     self.config = config
     let client = Client()
       .setEndpoint(config.endpoint)
       .setProject(config.projectId)
     if let credential = KeychainSessionStore.read(), !credential.isEmpty {
-      Self.applyStoredCredential(credential, to: client)
+      Self.restoreCredential(credential, to: client)
     }
     self.client = client
     account = Account(client)
     tables = TablesDB(client)
+    realtime = Realtime(client)
   }
 
   func ping() async throws -> String {
@@ -123,8 +151,8 @@ final class AppwriteService {
 
   func login(email: String, password: String) async throws -> AppwriteUser {
     try KeychainSessionStore.delete()
-    clearStoredDomainCookies()
-    try await createEmailPasswordSession(email: email, password: password)
+    forgetStoredCookies()
+    try await openEmailSession(email: email, password: password)
     return try await account.get()
   }
 
@@ -142,7 +170,7 @@ final class AppwriteService {
   func logout() async throws {
     _ = try? await account.deleteSession(sessionId: "current")
     try KeychainSessionStore.delete()
-    clearStoredDomainCookies()
+    forgetStoredCookies()
     _ = client.setCookie("")
     _ = client.setSession("")
   }
@@ -156,14 +184,16 @@ final class AppwriteService {
     user.prefs.data.mapValues { unwrapAnyCodable($0) }
   }
 
-  // appwrite's ios cookie story is a fucking mess here, so we grab the session cookie ourselves.
-  private func createEmailPasswordSession(email: String, password: String) async throws {
-    let url = try appwriteURL(path: "/account/sessions/email")
+  private func openEmailSession(email: String, password: String) async throws {
+    // appwrite auth made this everyone's fucking problem
+    let url = try endpointURL(path: "/account/sessions/email")
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     client.getHeaders().forEach { key, value in
       request.setValue(value, forHTTPHeaderField: key)
     }
+    request.setValue(config.projectId, forHTTPHeaderField: "X-Appwrite-Project")
+    request.setValue("application/json", forHTTPHeaderField: "Accept")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.httpBody = try JSONSerialization.data(withJSONObject: [
       "email": email,
@@ -176,18 +206,18 @@ final class AppwriteService {
     }
 
     guard (200..<400).contains(httpResponse.statusCode) else {
-      throw AppwriteAuthError.server(message: Self.errorMessage(from: data, fallback: HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)))
+      throw AppwriteAuthError.server(message: Self.messageInResponse(from: data, fallback: HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)))
     }
 
-    let cookieHeader = sessionCookieHeader(from: httpResponse, url: url)
+    let cookieHeader = cookieHeader(from: httpResponse, url: url)
     if !cookieHeader.isEmpty {
       try KeychainSessionStore.save("cookie:\(cookieHeader)")
       _ = client.setCookie(cookieHeader)
-      storeDomainCookieHeader(cookieHeader)
+      rememberCookieHeader(cookieHeader)
       return
     }
 
-    if let secret = Self.sessionSecret(from: data), !secret.isEmpty {
+    if let secret = Self.secretInResponse(from: data), !secret.isEmpty {
       try KeychainSessionStore.save("session:\(secret)")
       _ = client.setSession(secret)
       return
@@ -196,7 +226,7 @@ final class AppwriteService {
     throw AppwriteAuthError.missingSessionCookie
   }
 
-  private func appwriteURL(path: String) throws -> URL {
+  private func endpointURL(path: String) throws -> URL {
     let base = config.endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     guard let url = URL(string: base + path) else {
       throw AppwriteAuthError.invalidEndpoint
@@ -204,8 +234,8 @@ final class AppwriteService {
     return url
   }
 
-  // merge cookies from the response, storage, and prayer — appwrite does not make this easy.
-  private func sessionCookieHeader(from response: HTTPURLResponse, url: URL) -> String {
+  private func cookieHeader(from response: HTTPURLResponse, url: URL) -> String {
+    // cookie archaeology. dig through headers, storage, pray something matches
     let headerFields = response.allHeaderFields.reduce(into: [String: String]()) { result, pair in
       guard let key = pair.key as? String else { return }
       result[key] = String(describing: pair.value)
@@ -225,12 +255,12 @@ final class AppwriteService {
       .joined(separator: "; ")
   }
 
-  private func storeDomainCookieHeader(_ cookieHeader: String) {
+  private func rememberCookieHeader(_ cookieHeader: String) {
     guard let domain = URL(string: config.endpoint)?.host else { return }
     UserDefaults.standard.set([cookieHeader], forKey: domain)
   }
 
-  private func clearStoredDomainCookies() {
+  private func forgetStoredCookies() {
     guard let domain = URL(string: config.endpoint)?.host else { return }
     UserDefaults.standard.removeObject(forKey: domain)
     guard let url = URL(string: config.endpoint) else { return }
@@ -240,7 +270,7 @@ final class AppwriteService {
     }
   }
 
-  private static func applyStoredCredential(_ credential: String, to client: Client) {
+  private static func restoreCredential(_ credential: String, to client: Client) {
     if credential.hasPrefix("cookie:") {
       _ = client.setCookie(String(credential.dropFirst("cookie:".count)))
     } else if credential.hasPrefix("session:") {
@@ -250,7 +280,7 @@ final class AppwriteService {
     }
   }
 
-  private static func sessionSecret(from data: Data) -> String? {
+  private static func secretInResponse(from data: Data) -> String? {
     guard let object = try? JSONSerialization.jsonObject(with: data),
           let dictionary = object as? [String: Any],
           let secret = dictionary["secret"] as? String
@@ -260,7 +290,7 @@ final class AppwriteService {
     return secret
   }
 
-  private static func errorMessage(from data: Data, fallback: String) -> String {
+  private static func messageInResponse(from data: Data, fallback: String) -> String {
     guard let object = try? JSONSerialization.jsonObject(with: data),
           let dictionary = object as? [String: Any],
           let message = dictionary["message"] as? String,
@@ -271,8 +301,8 @@ final class AppwriteService {
     return message
   }
 
-  // recursive anycodable unwrapping. i dont fully trust this; good luck if prefs get weird.
   static func unwrapAnyCodable(_ value: Any) -> Any {
+    // recursive unwrapping because appwrite nested codable hell never ends
     if let value = value as? AnyCodable {
       return unwrapAnyCodable(value.value)
     }
@@ -337,6 +367,7 @@ final class IntakeRepository {
     let limit = 100
     var offset = 0
 
+    // yes this keeps asking until the server gets bored or we run out of memory
     while true {
       let response = try await service.tables.listRows(
         databaseId: service.config.databaseId,
@@ -356,23 +387,24 @@ final class IntakeRepository {
       offset += limit
     }
 
-    return Metrics.sorted(rows.map(Self.fromRow))
+    return Metrics.sorted(rows.map(Self.entryFromRow))
   }
 
   func createEntry(userId: String, draft: EntryDraft) async throws -> RedBullEntry {
-    let entry = Metrics.buildEntry(userId: userId, draft: draft)
+    let entry = Metrics.makeEntry(userId: userId, draft: draft)
     let row = try await service.tables.createRow(
       databaseId: service.config.databaseId,
       tableId: service.config.intakeTableId,
       rowId: ID.custom(entry.id),
-      data: Self.rowData(entry),
-      permissions: Self.userRowPermissions(userId),
+      data: Self.entryRowData(entry),
+      permissions: Self.ownerPermissions(userId),
       nestedType: IntakeEntryRow.self
     )
-    return Self.fromRow(row)
+    return Self.entryFromRow(row)
   }
 
   func createEntries(userId: String, drafts: [EntryDraft]) async throws -> [RedBullEntry] {
+    // n+1 network calls. what could possibly go wrong with 500 imports
     var saved: [RedBullEntry] = []
     for draft in drafts {
       saved.append(try await createEntry(userId: userId, draft: draft))
@@ -381,16 +413,16 @@ final class IntakeRepository {
   }
 
   func updateEntry(userId: String, id: String, draft: EntryDraft) async throws -> RedBullEntry {
-    let entry = Metrics.buildEntry(userId: userId, draft: draft, id: id)
+    let entry = Metrics.makeEntry(userId: userId, draft: draft, id: id)
     let row = try await service.tables.updateRow(
       databaseId: service.config.databaseId,
       tableId: service.config.intakeTableId,
       rowId: id,
-      data: Self.rowData(entry),
-      permissions: Self.userRowPermissions(userId),
+      data: Self.entryRowData(entry),
+      permissions: Self.ownerPermissions(userId),
       nestedType: IntakeEntryRow.self
     )
-    return Self.fromRow(row)
+    return Self.entryFromRow(row)
   }
 
   func deleteEntry(id: String) async throws {
@@ -401,7 +433,7 @@ final class IntakeRepository {
     )
   }
 
-  private static func fromRow(_ row: AppwriteModels.Row<IntakeEntryRow>) -> RedBullEntry {
+  private static func entryFromRow(_ row: AppwriteModels.Row<IntakeEntryRow>) -> RedBullEntry {
     let data = row.data
     return RedBullEntry(
       id: row.id,
@@ -423,7 +455,7 @@ final class IntakeRepository {
     )
   }
 
-  private static func rowData(_ entry: RedBullEntry) -> [String: Any] {
+  private static func entryRowData(_ entry: RedBullEntry) -> [String: Any] {
     var data: [String: Any] = [
       "userId": entry.userId,
       "cans": entry.cans,
@@ -444,7 +476,7 @@ final class IntakeRepository {
     return data
   }
 
-  private static func userRowPermissions(_ userId: String) -> [String] {
+  private static func ownerPermissions(_ userId: String) -> [String] {
     let role = Role.user(userId)
     return [
       Permission.read(role),
@@ -479,8 +511,8 @@ final class BarcodeRepository {
 
   func listCatalog(userId: String) async -> BarcodeLookupCatalog {
     var catalog = BarcodeLookupCatalog(
-      verifiedProducts: Self.loadBuiltInVerifiedProducts(),
-      userMappings: Self.loadLocalUserMappings(userId: userId)
+      verifiedProducts: Self.readBundledProducts(),
+      userMappings: Self.readLocalMappings(userId: userId)
     )
 
     do {
@@ -488,8 +520,9 @@ final class BarcodeRepository {
       if !cloud.verifiedProducts.isEmpty {
         catalog.verifiedProducts = cloud.verifiedProducts
       }
-      catalog.userMappings = mergeUserMappings(catalog.userMappings, cloud.userMappings)
+      catalog.userMappings = mergeMappings(catalog.userMappings, cloud.userMappings)
     } catch {
+      // cloud shat itself. pretend local storage was the plan all along
       return catalog
     }
 
@@ -500,10 +533,10 @@ final class BarcodeRepository {
     let barcode = BarcodeLookup.normalize(barcodeValue)
     do {
       let row = try await upsertCloudUserMapping(userId: userId, barcode: barcode, product: product)
-      Self.upsertLocalUserMapping(userId: userId, mapping: row)
+      Self.saveLocalMapping(userId: userId, mapping: row)
       return row
     } catch {
-      return Self.upsertLocalUserMapping(userId: userId, barcode: barcode, product: product)
+      return Self.saveLocalMapping(userId: userId, barcode: barcode, product: product)
     }
   }
 
@@ -527,9 +560,9 @@ final class BarcodeRepository {
 
       response.rows.forEach { row in
         if row.data.scope == "verified" {
-          verified[row.data.barcode] = Self.verifiedProduct(from: row.data)
+          verified[row.data.barcode] = Self.seedProduct(from: row.data)
         } else {
-          userMappings.append(Self.userMapping(from: row))
+          userMappings.append(Self.mappingFromRow(from: row))
         }
       }
 
@@ -544,7 +577,7 @@ final class BarcodeRepository {
 
   private func upsertCloudUserMapping(userId: String, barcode: String, product: BarcodeProductDraft) async throws -> UserBarcodeMapping {
     let existing = try await findUserBarcodeRow(userId: userId, barcode: barcode)
-    let data = Self.userRowData(userId: userId, barcode: barcode, product: product)
+    let data = Self.mappingRowData(userId: userId, barcode: barcode, product: product)
 
     if let existing {
       let row = try await service.tables.updateRow(
@@ -552,10 +585,10 @@ final class BarcodeRepository {
         tableId: service.config.barcodeTableId,
         rowId: existing.id,
         data: data,
-        permissions: Self.userRowPermissions(userId),
+        permissions: Self.ownerPermissions(userId),
         nestedType: BarcodeRow.self
       )
-      return Self.userMapping(from: row)
+      return Self.mappingFromRow(from: row)
     }
 
     let row = try await service.tables.createRow(
@@ -563,10 +596,10 @@ final class BarcodeRepository {
       tableId: service.config.barcodeTableId,
       rowId: ID.unique(),
       data: data,
-      permissions: Self.userRowPermissions(userId),
+      permissions: Self.ownerPermissions(userId),
       nestedType: BarcodeRow.self
     )
-    return Self.userMapping(from: row)
+    return Self.mappingFromRow(from: row)
   }
 
   private func findUserBarcodeRow(userId: String, barcode: String) async throws -> AppwriteModels.Row<BarcodeRow>? {
@@ -584,7 +617,7 @@ final class BarcodeRepository {
     return response.rows.first
   }
 
-  private static func loadBuiltInVerifiedProducts() -> [String: BarcodeSeedProduct] {
+  private static func readBundledProducts() -> [String: BarcodeSeedProduct] {
     let candidates = [
       Bundle.main.url(forResource: "verified-barcodes", withExtension: "json"),
       Bundle.main.url(forResource: "verified-barcodes", withExtension: "json", subdirectory: "Data"),
@@ -598,7 +631,7 @@ final class BarcodeRepository {
     return decoded
   }
 
-  private static func verifiedProduct(from row: BarcodeRow) -> BarcodeSeedProduct {
+  private static func seedProduct(from row: BarcodeRow) -> BarcodeSeedProduct {
     BarcodeSeedProduct(
       flavourName: row.flavourName,
       sizeMl: row.sizeMl,
@@ -613,7 +646,7 @@ final class BarcodeRepository {
     )
   }
 
-  private static func userMapping(from row: AppwriteModels.Row<BarcodeRow>) -> UserBarcodeMapping {
+  private static func mappingFromRow(from row: AppwriteModels.Row<BarcodeRow>) -> UserBarcodeMapping {
     UserBarcodeMapping(
       barcode: row.data.barcode,
       flavourName: row.data.flavourName,
@@ -626,7 +659,7 @@ final class BarcodeRepository {
     )
   }
 
-  private static func userRowData(userId: String, barcode: String, product: BarcodeProductDraft) -> [String: Any] {
+  private static func mappingRowData(userId: String, barcode: String, product: BarcodeProductDraft) -> [String: Any] {
     var data: [String: Any] = [
       "scope": "user",
       "ownerUserId": userId,
@@ -647,7 +680,7 @@ final class BarcodeRepository {
     return data
   }
 
-  private static func userRowPermissions(_ userId: String) -> [String] {
+  private static func ownerPermissions(_ userId: String) -> [String] {
     let role = Role.user(userId)
     return [
       Permission.read(role),
@@ -656,12 +689,12 @@ final class BarcodeRepository {
     ]
   }
 
-  private static func storageKey(userId: String) -> String {
+  private static func localMappingsKey(userId: String) -> String {
     "red-bull-barcode-mappings:v1:\(userId)"
   }
 
-  private static func loadLocalUserMappings(userId: String) -> [UserBarcodeMapping] {
-    guard let data = UserDefaults.standard.data(forKey: storageKey(userId: userId)),
+  private static func readLocalMappings(userId: String) -> [UserBarcodeMapping] {
+    guard let data = UserDefaults.standard.data(forKey: localMappingsKey(userId: userId)),
           let decoded = try? JSONDecoder().decode([UserBarcodeMapping].self, from: data)
     else {
       return []
@@ -669,16 +702,16 @@ final class BarcodeRepository {
     return decoded
   }
 
-  private static func saveLocalUserMappings(userId: String, mappings: [UserBarcodeMapping]) {
+  private static func writeLocalMappings(userId: String, mappings: [UserBarcodeMapping]) {
     if let data = try? JSONEncoder().encode(mappings) {
-      UserDefaults.standard.set(data, forKey: storageKey(userId: userId))
+      UserDefaults.standard.set(data, forKey: localMappingsKey(userId: userId))
     }
   }
 
   @discardableResult
-  private static func upsertLocalUserMapping(userId: String, barcode: String, product: BarcodeProductDraft) -> UserBarcodeMapping {
+  private static func saveLocalMapping(userId: String, barcode: String, product: BarcodeProductDraft) -> UserBarcodeMapping {
     let now = DateCodec.isoString(from: Date())
-    let existing = loadLocalUserMappings(userId: userId).first(where: { $0.barcode == barcode })
+    let existing = readLocalMappings(userId: userId).first(where: { $0.barcode == barcode })
     let mapping = UserBarcodeMapping(
       barcode: barcode,
       flavourName: product.flavourName,
@@ -689,19 +722,19 @@ final class BarcodeRepository {
       createdAt: existing?.createdAt ?? now,
       updatedAt: now
     )
-    upsertLocalUserMapping(userId: userId, mapping: mapping)
+    saveLocalMapping(userId: userId, mapping: mapping)
     return mapping
   }
 
-  private static func upsertLocalUserMapping(userId: String, mapping: UserBarcodeMapping) {
-    let existing = loadLocalUserMappings(userId: userId)
+  private static func saveLocalMapping(userId: String, mapping: UserBarcodeMapping) {
+    let existing = readLocalMappings(userId: userId)
     let next = existing.contains(where: { $0.barcode == mapping.barcode })
       ? existing.map { $0.barcode == mapping.barcode ? mapping : $0 }
       : existing + [mapping]
-    saveLocalUserMappings(userId: userId, mappings: next)
+    writeLocalMappings(userId: userId, mappings: next)
   }
 
-  private func mergeUserMappings(_ left: [UserBarcodeMapping], _ right: [UserBarcodeMapping]) -> [UserBarcodeMapping] {
+  private func mergeMappings(_ left: [UserBarcodeMapping], _ right: [UserBarcodeMapping]) -> [UserBarcodeMapping] {
     var byBarcode: [String: UserBarcodeMapping] = [:]
     (left + right).forEach { mapping in
       byBarcode[mapping.barcode] = mapping
@@ -710,10 +743,10 @@ final class BarcodeRepository {
   }
 }
 
-// turns appwrite permission errors into something a human might actually fix.
 func appwriteErrorMessage(_ error: Error) -> String {
   if let appwriteError = error as? AppwriteError {
     let message = appwriteError.message
+    // regex because appwrite errors are vibes not documentation
     if message.range(of: #"permissions?.*create|action 'create'|create.*permissions?"#, options: [.regularExpression, .caseInsensitive]) != nil {
       return "Appwrite table permissions need Users -> Create, with row security enabled on the intake table."
     }
