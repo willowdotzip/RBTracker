@@ -1,8 +1,6 @@
-# RBTracker iOS
+# This project is no longer updated and has been archived. 
 
-[![Swift](https://img.shields.io/badge/Swift-5.9-FA7343?logo=swift)](https://swift.org)
-[![Platform](https://img.shields.io/badge/iOS-17%2B-000000?logo=apple)](https://developer.apple.com/ios/)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 
 native iOS app for tracking Red Bull intake, caffeine, spending, flavours, and usage patterns.
 
